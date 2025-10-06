@@ -1,16 +1,16 @@
 
 <div align="center">
 	<h1>PosePilot 🧘</h1>
-	<p>If you find PosePilot helpful, give us a ⭐!</p>
+	<h3>If you find PosePilot helpful, give us a ⭐!</h3>
 	<p>
 		<a href="https://link.springer.com/chapter/10.1007/978-3-031-99568-2_17">
-			<img src="https://img.shields.io/badge/Springer%20DOI-10.1007%2F978--3--031--99568--2_17-blue" alt="Springer DOI">
+			<img src="https://img.shields.io/badge/Springer%20DOI-10.1007%2F978--3--031--99568--2_17-blue?style=for-the-badge" alt="Springer DOI">
 		</a>
 		<a href="https://arxiv.org/abs/2505.19186">
-			<img src="https://img.shields.io/badge/arXiv-2505.19186-b31b1b.svg" alt="arXiv">
+			<img src="https://img.shields.io/badge/arXiv-2505.19186-b31b1b.svg?style=for-the-badge" alt="arXiv">
 		</a>
 	</p>
-    <p><b>PosePilot: An Edge-AI Solution for Posture Correction in Physical Exercises</b></p>
+    <h2><b>An Edge-AI Solution for Posture Correction in Physical Exercises</b></h2>
 	<img src="./assets/PosePilot-Pipeline.png" alt="PosePilot Pipeline" />
 </div>
 
