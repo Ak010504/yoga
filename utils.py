@@ -424,7 +424,6 @@ def equal_rows(data, limit):
 
 def plot_training_history(history):
     """plot training history."""
-    import matplotlib.pyplot as plt
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
@@ -451,7 +450,6 @@ def plot_training_history(history):
 
 def plot_confusion_matrix(labels, predictions, pose_mapping):
     """plot confusion matrix."""
-    import matplotlib.pyplot as plt
     import seaborn as sns
     from sklearn.metrics import confusion_matrix
 
@@ -524,7 +522,7 @@ def give_landmarks(video_path, label, fps):
 
             try:
                 landmarks = results.pose_landmarks.landmark
-            except:
+            except AttributeError:
                 print("No landmarks found")
             frame_count += 1
 
@@ -851,7 +849,6 @@ def generate_correction_graph(data_input, outputs, data_original, pose_name):
     matplotlib.figure.Figure
         figure object with correction graphs
     """
-    import matplotlib.pyplot as plt
     import numpy as np
 
     feature_labels = [
@@ -1002,8 +999,6 @@ def create_correction_visualization(landmarks_df, correction_data, frame_idx=0):
     """
     try:
         import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-        from matplotlib.colors import LinearSegmentedColormap
 
         # Get correction angles for the frame
         input_data = correction_data["input_data"]

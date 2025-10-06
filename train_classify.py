@@ -12,14 +12,12 @@ import torch
 import numpy as np
 import pandas as pd
 import torch.nn as nn
-import seaborn as sns
 from tqdm import tqdm
 import torch.optim as optim
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report
 
 from classify_model import ClassifyPose
 from utils import (
@@ -371,18 +369,12 @@ def main():
     parser.add_argument(
         "--learning_rate", type=float, default=0.001, help="Learning rate"
     )
-    parser.add_argument(
-        "--test_size", type=float, default=0.1, help="Test set size fraction"
-    )
     parser.add_argument("--hidden_size", type=int, default=32, help="LSTM hidden size")
     parser.add_argument(
         "--num_layers", type=int, default=1, help="Number of LSTM layers"
     )
     parser.add_argument(
         "--sequence_length", type=int, default=10, help="Sequence length"
-    )
-    parser.add_argument(
-        "--desired_frames", type=int, default=10, help="Number of frames to select"
     )
     parser.add_argument("--no_plots", action="store_true", help="Skip plotting")
     parser.add_argument(
@@ -406,8 +398,6 @@ def main():
     num_classes = 6
     num_epochs = args.epochs
     learning_rate = args.learning_rate
-    test_size = args.test_size
-    desired_frames = args.desired_frames
 
     processed_cache_path = os.path.join(data_dir, "cached_classify_features.pkl")
 

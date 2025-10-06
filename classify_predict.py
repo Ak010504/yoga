@@ -2,14 +2,12 @@
 pose classification prediction pipeline.
 """
 
-import os
 import torch
 import pickle
 import warnings
 import pandas as pd
 from itertools import combinations
 from classify_model import ClassifyPose
-from sklearn.preprocessing import StandardScaler
 from utils import (
     cal_angle,
     cal_error,

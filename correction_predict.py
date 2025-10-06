@@ -2,14 +2,12 @@
 pose correction prediction pipeline.
 """
 
-import os
 import torch
 import pickle
 import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
 from correction_model import CorrModel
 from utils import (
     cal_error,
