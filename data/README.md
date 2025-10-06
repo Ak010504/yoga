@@ -35,8 +35,9 @@ Each CSV file contains pose landmark data extracted from video frames using Medi
 
 PosePilot uses MediaPipe's 33-point pose model for human pose detection. Each landmark represents a specific body part:
 
-<img src="../assets/keypoint_map.png" alt="Pose Landmarks Map" width="400">
-
+<div align="center">
+    <img src="../assets/keypoint_map.png" alt="Pose Landmarks Map" width="400">
+</div>
 
 ### Landmark Index Reference
 

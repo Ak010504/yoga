@@ -97,6 +97,12 @@ For programmatic pose classification and correction:
 * **First Step**: Convert video to keypoints using `give_landmarks()` function in `utils.py`
 * **Then**: Use the extracted keypoints for classification or correction tasks
 
+## Gradio GUI 
+
+<div align="center">
+	<img src="./assets/gui.png" alt="Gradio Interface" height="50%"/>
+</div>
+
 ## Citation  🏷️
 
 If you use PosePilot in your research, please cite:
