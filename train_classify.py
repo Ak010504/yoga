@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import torch.nn as nn
 import seaborn as sns
+from tqdm import tqdm
 import torch.optim as optim
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
@@ -51,7 +52,7 @@ def load_and_process_data(data_dir):
     all_sequences = []
     pose_classes = ["cobra", "tree", "goddess", "chair", "downdog", "warrior"]
 
-    for pose in pose_classes:
+    for pose in tqdm(pose_classes, desc="Processing asanas"):
         pose_dir = os.path.join(data_dir, pose)
         for cam in ["cam_0", "cam_1", "cam_2", "cam_3"]:
             cam_dir = os.path.join(pose_dir, cam)
@@ -66,6 +67,7 @@ def load_and_process_data(data_dir):
                     if sequence is not None:
                         all_sequences.append(sequence)
 
+    print(f"Total files loaded: {len(all_sequences)}")
     return all_sequences
 
 
@@ -170,30 +172,19 @@ def prepare_training_data(sequences, test_size=0.2):
 
     # reshape to sequences
     X_sequences = X_truncated.reshape(num_sequences, sequence_length, -1)
-    y_sequences = y_truncated[::sequence_length]  # take every 10th label
+    y_sequences = y_truncated[::sequence_length]
 
-    print(f"DEBUG: Total sequences: {num_sequences}")
-    print(f"DEBUG: Sequence shape: {X_sequences.shape}")
-    print(f"DEBUG: Labels shape: {y_sequences.shape}")
-    print(f"DEBUG: Samples per pose: {np.bincount(y_sequences)}")
-
-    # now split sequences into train/test
     train_data, test_data = train_test_split(
         np.column_stack([X_sequences.reshape(num_sequences, -1), y_sequences]),
         test_size=test_size,
         stratify=y_sequences,
     )
 
-    # extract features and labels
     train_features = train_data[:, :-1]
     train_labels = train_data[:, -1]
     test_features = test_data[:, :-1]
     test_labels = test_data[:, -1]
 
-    print(f"DEBUG: Train sequences: {len(train_features)}")
-    print(f"DEBUG: Test sequences: {len(test_features)}")
-
-    # reshape back to sequence format
     train_features = train_features.reshape(-1, sequence_length, X_sequences.shape[2])
     test_features = test_features.reshape(-1, sequence_length, X_sequences.shape[2])
 
