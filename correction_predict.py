@@ -319,7 +319,12 @@ def corr_predict(pose, data):
     data = correction_angles_convert(data)
     data = cal_error(data)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     test(data, device=device, pose=pose)
 
 
@@ -347,7 +352,12 @@ def predict_correction_from_dataframe(data, pose, use_all_frames=True):
         processed_data = correction_angles_convert(processed_data)
         processed_data = cal_error(processed_data)
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
 
         correction_data = get_correction_data_for_plotting(
             processed_data, device, pose, use_all_frames
