@@ -9,7 +9,7 @@ import warnings
 import cv2
 import gradio as gr
 import mediapipe as mp
-from predict_classify import predict_from_dataframe
+from classify_predict import predict_from_dataframe
 from correction_predict import predict_correction_from_dataframe
 from utils import (
     give_landmarks,

@@ -19,15 +19,15 @@ class ClassifyPose(nn.Module):
         self.num_layers = num_layers
 
         self.lstm = nn.LSTM(
-            input_size, hidden_size, num_layers, dropout=0.4, batch_first=True
+            input_size, hidden_size, num_layers, dropout=0.5, batch_first=True
         )
         # Attention layer
         # self.attention = nn.MultiheadAttention(embed_dim=hidden_size, num_heads=8, batch_first=True)
 
-        self.fc = nn.Linear(hidden_size, 512)
-        self.fc2 = nn.Linear(512, 64)
-        self.fc3 = nn.Linear(64, num_classes)
-        self.leaky_relu = nn.ReLU(0.1)
+        self.fc = nn.Linear(hidden_size, 64)
+        self.fc2 = nn.Linear(64, 32)
+        self.fc3 = nn.Linear(32, num_classes)
+        self.relu = nn.ReLU(0.1)
 
     def forward(self, x):
 
@@ -35,13 +35,11 @@ class ClassifyPose(nn.Module):
         # Apply attention
         # out, _ = self.attention(out, out, out)
 
-        # Decode the hidden state of the last time step
-        # out.shape = (batch_size, seq_length, hidden_size)
         out = out[:, -1, :]
         out = self.fc(out)
-        out = self.leaky_relu(out)
+        out = self.relu(out)
         out = self.fc2(out)
-        out = self.leaky_relu(out)
+        out = self.relu(out)
         out = self.fc3(out)
 
         return out
