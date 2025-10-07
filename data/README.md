@@ -92,4 +92,4 @@ The dataset includes the following yoga poses:
 
 This dataset contains yoga pose data captured from four camera angles (cam_0, cam_1, cam_2, cam_3) for comprehensive movement coverage and for better generalization in model training. Each pose includes multiple participant recordings with diverse body types and execution styles. Pose sequences capture complete movements from start to finish, enabling temporal analysis of joint trajectories throughout each asana. For more , see the [PosePilot research paper](https://arxiv.org/pdf/2505.19186).
 
-For more information about PosePilot's architecture and usage, see the main [README](../README.md).
+For more information about PosePilot's architecture and usage, see the main [README](../readme.md).
