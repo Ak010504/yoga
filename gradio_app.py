@@ -48,6 +48,7 @@ def classify_pose_from_video(video_file, use_all_frames=True):
         tuple containing (rendered_video_path, predicted_pose, video_info, correction_graph, comparison_video_path)
     """
     try:
+        print("try1")
         landmarks_df, landmark_mp_list = give_landmarks(video_file, "", fps=30)
         predicted_pose = predict_from_dataframe(landmarks_df)
 
@@ -55,15 +56,19 @@ def classify_pose_from_video(video_file, use_all_frames=True):
         correction_graph = None
 
         try:
+            print("try2")
             correction_data = predict_correction_from_dataframe(
-                landmarks_df, predicted_pose, use_all_frames
+                landmarks_df, predicted_pose
             )
-
+            print(correction_data , " correction data wohooooo ")
             if correction_data is not None:
+                
                 correction_graph = generate_correction_graph_for_pose(
-                    landmarks_df, predicted_pose
+                    landmarks_df, predicted_pose, correction_data
                 )
-
+            else:
+                print("correction data is none")
+            
         except Exception:
             correction_data = None
 
@@ -71,12 +76,16 @@ def classify_pose_from_video(video_file, use_all_frames=True):
 
         correction_video_path = None
         if correction_data is not None:
+            print("try3")
             correction_video_path = create_correction_visualization_video(
                 video_file, landmark_mp_list, correction_data
             )
 
-        video_info = f"**Frames processed:** {len(landmarks_df)}"
+        print("hello")
+        video_info = f"**Frames processed to:** {len(landmarks_df)}"
 
+        
+        
         return (
             rendered_video_path,
             predicted_pose,
@@ -205,7 +214,7 @@ def create_correction_visualization_video(
     return output_path
 
 
-def generate_correction_graph_for_pose(landmarks_df, predicted_pose):
+def generate_correction_graph_for_pose(landmarks_df, predicted_pose, correction_data):
     """
     generate correction graph for the predicted pose.
 
@@ -221,27 +230,23 @@ def generate_correction_graph_for_pose(landmarks_df, predicted_pose):
     matplotlib.figure.Figure or None
         correction graph figure or None if not available
     """
+    print("fifidf")
     try:
+        print("hoi")
         import os
 
         correction_model_path = f"models/{predicted_pose}_correction_model.pth"
         if not os.path.exists(correction_model_path):
             return None
 
-        correction_data = predict_correction_from_dataframe(
-            landmarks_df, predicted_pose
-        )
-
-        if correction_data is None:
-            return None
-
         data_input = correction_data["input_data"]
         outputs = correction_data["corrected_data"]
         data_original = correction_data["reference_data"]
-
+        print("figure is coming")
         fig = generate_correction_graph(
             data_input, outputs, data_original, predicted_pose
         )
+        print("figure is over")
 
         return fig
 
@@ -322,6 +327,7 @@ def create_gradio_interface():
                 return None, "", "", None, None, state
 
             result = classify_pose_from_video(video_file, use_all_frames)
+            print(result)
 
             new_state = {
                 "rendered_video_path": result[0],
@@ -439,7 +445,7 @@ def main():
     app = create_gradio_interface()
     app.launch(
         server_name="127.0.0.1",
-        server_port=7860,
+        server_port=8080,
         share=False,
         show_error=True,
     )

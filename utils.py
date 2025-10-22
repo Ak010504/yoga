@@ -396,30 +396,72 @@ def add_rows(df, limit):
     return df
 
 
-def equal_rows(data, limit):
+# Inside utils.py, replace the equal_rows function
+def equal_rows(df, limit, calculate_error=True):
     """
-    adjust the number of rows in the input data to match the target length by either reducing or adding rows.
+    Adjust the number of rows in the input data to match the target length by either reducing or adding rows.
+    Optionally calculates error before adjusting rows.
 
     Parameters
     ----------
-    data : DataFrame
-        the input DataFrame
+    df : DataFrame
+        The input DataFrame (should contain features f1-f9, potentially an 'error' column if calculate_error=False)
     limit : int
-        the target number of rows
+        The target number of rows
+    calculate_error : bool
+        Whether to call cal_error before adjusting rows (default True for backward compatibility)
 
     Returns
     -------
     DataFrame
-        the DataFrame adjusted to the target length
+        The DataFrame adjusted to the target length
     """
+    target_length = limit
 
-    if data.shape[0] < limit:
-        data = add_rows(data, limit)
+    # Calculate error if requested and the 'error' column doesn't already exist
+    if calculate_error and 'error' not in df.columns:
+        df = cal_error(df) # Add error column based on existing features
+    elif calculate_error and 'error' in df.columns:
+        # 'error' column already exists, proceed
+        pass
+    elif not calculate_error:
+        # Do not calculate error, assume df is ready for row adjustment based on its existing features
+        # Ensure df has features like f1-f9 for add_rows/reduce_rows logic if needed
+        # The add_rows/reduce_rows functions might also need 'error' column for their internal logic.
+        # If equal_rows is used *without* error calculation, add_rows/reduce_rows might also need changes.
+        # For standard sequence length adjustment using simple interpolation/dropping, we might need a different approach.
+        # Let's assume for now that if calculate_error=False, we just want to adjust length *without*
+        # the complex error-based dropping/adding logic inside add_rows/reduce_rows.
+        # The original equal_rows just calls reduce_rows and add_rows which rely on 'error'.
+        # We need to potentially bypass the error-dependent logic if calculate_error=False.
+        # The safest way is to modify reduce_rows/add_rows too, or create a simpler length adjuster.
+        # Let's modify equal_rows to just do simple truncation/padding if calculate_error=False
+        # and the complex logic if calculate_error=True.
 
-    if data.shape[0] > limit:
-        data = reduce_rows(data, limit)
+        # For simple truncation/padding without error dependency:
+        current_len = len(df)
+        if current_len > target_length:
+            # Truncate
+            df = df.iloc[:target_length].reset_index(drop=True)
+        elif current_len < target_length:
+            # Pad by repeating the last row (or use interpolation if needed)
+            # This is a basic padding - might need more sophisticated methods
+            last_row = df.iloc[[-1]] # Keep it as a DataFrame
+            rows_to_add = target_length - current_len
+            padding_df = pd.concat([last_row] * rows_to_add, ignore_index=True)
+            df = pd.concat([df, padding_df], ignore_index=True)
+        # If lengths are equal, df is returned as is
+        return df # Return immediately after simple adjust, bypassing reduce/add_rows
 
-    return data
+
+    if len(df) < target_length:
+        df = add_rows(df, target_length)
+
+    if len(df) > target_length:
+        df = reduce_rows(df, target_length)
+
+    return df
+
 
 
 def plot_training_history(history):
