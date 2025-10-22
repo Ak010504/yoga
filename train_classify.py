@@ -1,5 +1,6 @@
 """
 Training pipeline for classifier model.
+Modified to include Surya Namaskar and updated folder structure.
 """
 
 import os
@@ -48,28 +49,42 @@ def load_and_process_data(data_dir):
         list of processed sequences (each sequence is a DataFrame)
     """
     all_sequences = []
-    pose_classes = ["cobra", "tree", "goddess", "chair", "downdog", "warrior"]
+    # Updated pose classes to include Surya Namaskar (use folder name as it appears)
+    pose_classes = ["cobra", "tree", "goddess", "chair", "downdog", "warrior", "surya_namaskar"]
 
     for pose in tqdm(pose_classes, desc="Processing asanas"):
         pose_dir = os.path.join(data_dir, pose)
-        for cam in ["cam_0", "cam_1", "cam_2", "cam_3"]:
-            cam_dir = os.path.join(pose_dir, cam)
-            for file in os.listdir(cam_dir):
-                if file.endswith(".csv"):
-                    file_path = os.path.join(cam_dir, file)
+        
+        # Check if directory exists
+        if not os.path.exists(pose_dir):
+            print(f"Warning: Directory {pose_dir} not found. Skipping {pose}...")
+            continue
+            
+        file_count = 0
+        # Process all CSV files directly in the pose directory (no cam subfolders)
+        for file in os.listdir(pose_dir):
+            if file.endswith(".csv"):
+                file_path = os.path.join(pose_dir, file)
+                try:
                     df = pd.read_csv(file_path)
-
+                    
                     sequence = process_csv_to_sequence(
-                        df, pose, file.replace(".csv", ""), cam
+                        df, pose, file.replace(".csv", "")
                     )
                     if sequence is not None:
                         all_sequences.append(sequence)
+                        file_count += 1
+                except Exception as e:
+                    print(f"Error reading {file_path}: {e}")
+                    continue
+        
+        print(f"  Loaded {file_count} files for {pose}")
 
-    print(f"Total files loaded: {len(all_sequences)}")
+    print(f"\nTotal sequences loaded: {len(all_sequences)}")
     return all_sequences
 
 
-def process_csv_to_sequence(df, pose, person, camera):
+def process_csv_to_sequence(df, pose, person):
     """
     process a single CSV file into a training sequence.
 
@@ -78,11 +93,9 @@ def process_csv_to_sequence(df, pose, person, camera):
     df : pd.DataFrame
         raw CSV data
     pose : str
-        pose name
+        pose name (folder name)
     person : str
-        person identifier
-    camera : str
-        camera identifier
+        person identifier (filename without extension)
 
     Returns
     -------
@@ -90,14 +103,26 @@ def process_csv_to_sequence(df, pose, person, camera):
         processed sequence or None if processing failed
     """
     try:
+        # Extract pose landmark data (first 132 columns: 33 landmarks × 4 values each)
         pose_data = df.iloc[:, :132].copy()
-        asana_label = df["asana"].iloc[0]
+        
+        # Get asana label - check if 'asana' column exists, otherwise use folder name
+        if "asana" in df.columns:
+            asana_label = df["asana"].iloc[0]
+        else:
+            # Use the folder name as the label
+            asana_label = pose
+        
+        # Normalize the label (handle spaces and case)
+        asana_label = str(asana_label).lower().strip().replace(" ", "_")
 
+        # Structure the data and get landmark names
         df_structured, body_pose_landmarks = structure_data(pose_data)
         df_structured, body_pose_landmarks = update_body_pose_landmarks(
             df_structured, body_pose_landmarks
         )
 
+        # Calculate all angle features from landmark combinations
         feature_df = pd.DataFrame()
         all_angles = list(combinations(body_pose_landmarks, 3))
 
@@ -112,15 +137,17 @@ def process_csv_to_sequence(df, pose, person, camera):
                 axis=1,
             )
 
+        # Calculate error and select top frames
         data_with_error = cal_error(feature_df)
         selected_data = select_top_frames(data_with_error, 10)
 
+        # Add the asana label
         selected_data["asana"] = asana_label
 
         return selected_data
 
     except Exception as e:
-        print(f"Error processing {pose}/{camera}/{person}: {e}")
+        print(f"Error processing {pose}/{person}: {e}")
         return None
 
 
@@ -140,42 +167,75 @@ def prepare_training_data(sequences, test_size=0.2):
     tuple
         (train_loader, test_loader, scaler, pose_mapping)
     """
-    pose_classes = ["cobra", "tree", "goddess", "chair", "downdog", "warrior"]
+    # Updated pose classes to include Surya Namaskar
+    pose_classes = ["cobra", "tree", "goddess", "chair", "downdog", "warrior", "surya_namaskar"]
     pose_mapping = {pose: idx for idx, pose in enumerate(pose_classes)}
+    
+    print(f"\nPose mapping: {pose_mapping}")
 
     all_features = []
     all_labels = []
+    
+    # Track pose distribution
+    pose_counts = {pose: 0 for pose in pose_classes}
 
     for sequence in sequences:
         feature_cols = [
             col for col in sequence.columns if col not in ["asana", "error"]
         ]
         features = sequence[feature_cols].values
-        label = pose_mapping[sequence["asana"].iloc[0]]
+        
+        # Get the pose label and normalize it
+        pose_label = str(sequence["asana"].iloc[0]).lower().strip().replace(" ", "_")
+        
+        if pose_label not in pose_mapping:
+            print(f"Warning: Unknown pose label '{pose_label}'. Skipping sequence.")
+            continue
+            
+        label = pose_mapping[pose_label]
+        pose_counts[pose_label] += 1
 
         all_features.append(features)
         all_labels.extend([label] * len(features))
+    
+    print(f"\nPose distribution:")
+    for pose, count in pose_counts.items():
+        print(f"  {pose}: {count} sequences")
 
-    # stack all features and labels first
+    if len(all_features) == 0:
+        raise ValueError("No valid sequences found! Check your data and pose labels.")
+
+    # Stack all features and labels
     X = np.vstack(all_features)
     y = np.array(all_labels)
 
-    # reshape to sequences BEFORE train/test split
+    # Reshape to sequences BEFORE train/test split
     sequence_length = 10
     num_sequences = len(X) // sequence_length
 
-    # truncate to ensure we have complete sequences
+    # Truncate to ensure we have complete sequences
     X_truncated = X[: num_sequences * sequence_length]
     y_truncated = y[: num_sequences * sequence_length]
 
-    # reshape to sequences
+    # Reshape to sequences
     X_sequences = X_truncated.reshape(num_sequences, sequence_length, -1)
     y_sequences = y_truncated[::sequence_length]
 
+    # Check if we have enough samples for stratification
+    unique, counts = np.unique(y_sequences, return_counts=True)
+    min_samples = min(counts)
+    
+    if min_samples < 2:
+        print(f"Warning: Some classes have less than 2 samples. Cannot perform stratified split.")
+        print(f"Class distribution: {dict(zip(unique, counts))}")
+        raise ValueError("Need at least 2 samples per class for train-test split")
+
+    # Train-test split with stratification
     train_data, test_data = train_test_split(
         np.column_stack([X_sequences.reshape(num_sequences, -1), y_sequences]),
         test_size=test_size,
         stratify=y_sequences,
+        random_state=42
     )
 
     train_features = train_data[:, :-1]
@@ -186,18 +246,18 @@ def prepare_training_data(sequences, test_size=0.2):
     train_features = train_features.reshape(-1, sequence_length, X_sequences.shape[2])
     test_features = test_features.reshape(-1, sequence_length, X_sequences.shape[2])
 
-    # standardize features
+    # Standardize features
     scaler = StandardScaler()
     train_scaled = scaler.fit_transform(
         train_features.reshape(-1, train_features.shape[2])
     )
     test_scaled = scaler.transform(test_features.reshape(-1, test_features.shape[2]))
 
-    # reshape back to sequences
+    # Reshape back to sequences
     train_scaled = train_scaled.reshape(train_features.shape)
     test_scaled = test_scaled.reshape(test_features.shape)
 
-    # convert to tensors
+    # Convert to tensors
     train_tensor = torch.tensor(train_scaled).float()
     test_tensor = torch.tensor(test_scaled).float()
     train_labels_tensor = torch.tensor(train_labels).long()
@@ -236,6 +296,7 @@ def train_model(model, train_loader, test_loader, num_epochs=50, learning_rate=0
         (model, training_history)
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\nUsing device: {device}")
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
@@ -385,54 +446,73 @@ def main():
 
     args = parser.parse_args()
 
-    print("Starting PosePilot training pipeline...")
-    print(
-        f"Configuration: epochs={args.epochs}, batch_size={args.batch_size}, lr={args.learning_rate}"
-    )
+    print("=" * 80)
+    print("PosePilot Training Pipeline - Updated for 7 Classes")
+    print("=" * 80)
+    print(f"Configuration:")
+    print(f"  Epochs: {args.epochs}")
+    print(f"  Batch size: {args.batch_size}")
+    print(f"  Learning rate: {args.learning_rate}")
+    print(f"  Hidden size: {args.hidden_size}")
+    print(f"  Num layers: {args.num_layers}")
+    print("=" * 80)
 
     data_dir = args.data_dir
-    input_size = 680
+    input_size = 680  # This is calculated from combinations of 17 landmarks
     hidden_size = args.hidden_size
     num_layers = args.num_layers
     sequence_length = args.sequence_length
-    num_classes = 6
+    num_classes = 7  # Updated from 6 to 7 to include Surya Namaskar
     num_epochs = args.epochs
     learning_rate = args.learning_rate
 
-    processed_cache_path = os.path.join(data_dir, "cached_classify_features.pkl")
+    processed_cache_path = os.path.join(data_dir, "cached_classify_features_v7.pkl")
 
     if args.use_cached_features and os.path.exists(processed_cache_path):
-        print("Loading cached processed sequences...")
+        print("\nLoading cached processed sequences...")
         with open(processed_cache_path, "rb") as f:
             sequences = pickle.load(f)
-        print(f"Loaded cached processed sequences: {len(sequences)} sequences")
+        print(f"Loaded {len(sequences)} cached sequences")
     else:
-        print("Loading and processing data...")
+        print("\nLoading and processing data from CSV files...")
         sequences = load_and_process_data(data_dir)
-        print(f"Processed {len(sequences)} sequences")
+        
+        if len(sequences) == 0:
+            raise ValueError("No sequences were loaded! Check your data directory structure.")
+        
+        print(f"\nProcessed {len(sequences)} sequences")
 
         print("Saving processed sequences to cache...")
         with open(processed_cache_path, "wb") as f:
             pickle.dump(sequences, f)
         print("Processed sequences cached successfully!")
 
-    print("Preparing training data...")
+    print("\nPreparing training data...")
     train_loader, test_loader, scaler, pose_mapping = prepare_training_data(sequences)
-    print(f"Training samples: {len(train_loader.dataset)}")
-    print(f"Test samples: {len(test_loader.dataset)}")
+    print(f"\nDataset split:")
+    print(f"  Training samples: {len(train_loader.dataset)}")
+    print(f"  Test samples: {len(test_loader.dataset)}")
 
-    print("Creating model...")
+    print("\nCreating model...")
     model = ClassifyPose(
         input_size, hidden_size, num_layers, sequence_length, num_classes
     )
-    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model created:")
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable parameters: {trainable_params:,}")
 
-    print("Training model...")
+    print("\n" + "=" * 80)
+    print("Starting training...")
+    print("=" * 80)
     trained_model, history = train_model(
         model, train_loader, test_loader, num_epochs, learning_rate
     )
 
+    print("\n" + "=" * 80)
     print("Evaluating model...")
+    print("=" * 80)
     evaluation = evaluate_model(trained_model, test_loader, pose_mapping)
 
     print(f"\nFinal Test Accuracy: {evaluation['accuracy']*100:.2f}%")
@@ -446,17 +526,30 @@ def main():
     )
 
     if not args.no_plots:
+        print("\nGenerating plots...")
         plot_training_history(history)
         plot_confusion_matrix(
             evaluation["labels"], evaluation["predictions"], pose_mapping
         )
+    
+    # Create models directory if it doesn't exist
+    os.makedirs("models", exist_ok=True)
+    
+    print("\nSaving model and artifacts...")
     torch.save(trained_model.state_dict(), "models/pose_classification_model.pth")
     with open("models/classify_scaler.pkl", "wb") as f:
         pickle.dump(scaler, f)
     with open("models/pose_mapping.pkl", "wb") as f:
         pickle.dump(pose_mapping, f)
 
-    print("\nModel and scaler saved successfully!")
+    print("\n" + "=" * 80)
+    print("Training Complete!")
+    print("=" * 80)
+    print("Saved files:")
+    print("  - models/pose_classification_model.pth")
+    print("  - models/classify_scaler.pkl")
+    print("  - models/pose_mapping.pkl")
+    print("=" * 80)
 
 
 if __name__ == "__main__":
