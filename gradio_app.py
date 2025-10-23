@@ -48,7 +48,6 @@ def classify_pose_from_video(video_file, use_all_frames=True):
         tuple containing (rendered_video_path, predicted_pose, video_info, correction_graph, comparison_video_path)
     """
     try:
-        print("try1")
         landmarks_df, landmark_mp_list = give_landmarks(video_file, "", fps=30)
         predicted_pose = predict_from_dataframe(landmarks_df)
 
@@ -56,19 +55,15 @@ def classify_pose_from_video(video_file, use_all_frames=True):
         correction_graph = None
 
         try:
-            print("try2")
             correction_data = predict_correction_from_dataframe(
-                landmarks_df, predicted_pose
+                landmarks_df, predicted_pose, use_all_frames
             )
-            print(correction_data , " correction data wohooooo ")
+
             if correction_data is not None:
-                
                 correction_graph = generate_correction_graph_for_pose(
-                    landmarks_df, predicted_pose, correction_data
+                    landmarks_df, predicted_pose
                 )
-            else:
-                print("correction data is none")
-            
+
         except Exception:
             correction_data = None
 
@@ -76,16 +71,12 @@ def classify_pose_from_video(video_file, use_all_frames=True):
 
         correction_video_path = None
         if correction_data is not None:
-            print("try3")
             correction_video_path = create_correction_visualization_video(
                 video_file, landmark_mp_list, correction_data
             )
 
-        print("hello")
-        video_info = f"**Frames processed to:** {len(landmarks_df)}"
+        video_info = f"**Frames processed:** {len(landmarks_df)}"
 
-        
-        
         return (
             rendered_video_path,
             predicted_pose,
@@ -214,7 +205,7 @@ def create_correction_visualization_video(
     return output_path
 
 
-def generate_correction_graph_for_pose(landmarks_df, predicted_pose, correction_data):
+def generate_correction_graph_for_pose(landmarks_df, predicted_pose):
     """
     generate correction graph for the predicted pose.
 
@@ -230,23 +221,27 @@ def generate_correction_graph_for_pose(landmarks_df, predicted_pose, correction_
     matplotlib.figure.Figure or None
         correction graph figure or None if not available
     """
-    print("fifidf")
     try:
-        print("hoi")
         import os
 
         correction_model_path = f"models/{predicted_pose}_correction_model.pth"
         if not os.path.exists(correction_model_path):
             return None
 
+        correction_data = predict_correction_from_dataframe(
+            landmarks_df, predicted_pose
+        )
+
+        if correction_data is None:
+            return None
+
         data_input = correction_data["input_data"]
         outputs = correction_data["corrected_data"]
         data_original = correction_data["reference_data"]
-        print("figure is coming")
+
         fig = generate_correction_graph(
             data_input, outputs, data_original, predicted_pose
         )
-        print("figure is over")
 
         return fig
 
@@ -272,19 +267,57 @@ def load_sample_video():
 
 def create_gradio_interface():
     """
-    create the Gradio interface for pose classification with save button.
-
-    Returns
-    -------
-    gr.Blocks
-        configured Gradio interface
+    Create a modern Gradio dashboard for PosePilot:
+    Left = Upload & Controls, Right = Results & Visualization.
     """
-    with gr.Blocks(title="🧘‍♀️ PosePilot", theme=gr.themes.Soft()) as app:
-        gr.HTML("<div style='text-align: center;'><h1>🧘‍♀️ PosePilot</h1></div>")
-        gr.Markdown(
-            "Upload a video to classify the yoga pose being performed. Supported poses: Tree, Chair, Warrior, Downward Dog, Cobra, Goddess"
-        )
+    theme = gr.themes.Soft(
+        primary_hue="blue",
+        secondary_hue="slate",
+        neutral_hue="slate",
+        text_size="md",
+        font=["Inter", "system-ui", "sans-serif"]
+    )
 
+    custom_css = """
+    .gradio-container {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        min-height: 100vh;
+    }
+    
+    .main-content {
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        backdrop-filter: blur(10px);
+    }
+    
+    .upload-section, .results-section {
+        background: white;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Fix text visibility */
+    h3, h2, label, .markdown, p {
+        color: #1f2937 !important;
+    }
+    
+    /* Fix section headers */
+    .upload-section h3, .results-section h3 {
+        color: #1f2937 !important;
+        font-weight: 600;
+    }
+    
+    footer {
+        display: none !important;
+    }
+    """
+
+    with gr.Blocks(title="PosePilot - Pose Classification", theme=theme, css=custom_css) as app:
+        
+        # --- State ---
         analysis_state = gr.State(
             {
                 "rendered_video_path": None,
@@ -295,39 +328,54 @@ def create_gradio_interface():
             }
         )
 
-        with gr.Row():
-            with gr.Column():
-                video_input = gr.Video(label="Upload Video")
-                use_all_frames = gr.Checkbox(
-                    label="Use All Frames",
-                    value=True,
-                    info="Use all video frames for correction analysis (unchecked = use 25 selected frames)",
-                )
+        # --- Main layout with container ---
+        with gr.Column(elem_classes="main-content"):
+            with gr.Row():
+                # ---------------- LEFT COLUMN ----------------
+                with gr.Column(scale=1, elem_classes="upload-section"):
+                    gr.Markdown("### 📤 Upload & Settings")
+                    video_input = gr.Video(label="Upload Your Pose Video", height=200)
 
-                with gr.Row():
-                    analyze_btn = gr.Button("Analyze Video", variant="primary")
-                    sample_btn = gr.Button("Use Sample Video", variant="secondary")
+                    use_all_frames = gr.Checkbox(
+                        label="Use All Frames",
+                        value=True,
+                        info="Use all frames for correction analysis (unchecked = 25 sampled frames)"
+                    )
 
-                save_btn = gr.Button("Save Results", variant="secondary")
+                    with gr.Row():
+                        analyze_btn = gr.Button("🚀 Analyze Video", variant="primary", size="lg")
+                        sample_btn = gr.Button("🎥 Load Sample", variant="secondary")
 
-            with gr.Column():
-                rendered_video = gr.Video(
-                    label="Rendered Video with Landmarks", interactive=False
-                )
-                predicted_pose = gr.Textbox(label="Predicted Pose", interactive=False)
-                video_info = gr.Markdown(label="Video Information")
-                correction_graph = gr.Plot(label="Correction Analysis")
-                correction_video = gr.Video(
-                    label="Correction Visualization Video", interactive=False
-                )
-                save_status = gr.Markdown(label="Save Status")
+                    save_btn = gr.Button("💾 Save Results", variant="secondary", size="lg")
+                    save_status = gr.Markdown(label="Save Status")
 
+                # ---------------- RIGHT COLUMN ----------------
+                with gr.Column(scale=2, elem_classes="results-section"):
+                    gr.Markdown("### 📊 Analysis Results")
+
+                    with gr.Row():
+                        predicted_pose = gr.Textbox(
+                            label="Predicted Pose",
+                            placeholder="Pose name will appear here...",
+                            interactive=False
+                        )
+                        video_info = gr.Markdown(label="Video Information")
+
+                    with gr.Tab("🎬 Rendered Keypoints Video"):
+                        rendered_video = gr.Video(interactive=False, height=240)
+
+                    with gr.Tab("🎨 Correction Visualization Video"):
+                        correction_video = gr.Video(interactive=False, height=240)
+
+                    with gr.Tab("📈 Correction Graph"):
+                        correction_graph = gr.Plot()
+
+        # --- Define button actions ---
         def analyze_video(video_file, use_all_frames, state):
             if video_file is None:
                 return None, "", "", None, None, state
 
             result = classify_pose_from_video(video_file, use_all_frames)
-            print(result)
 
             new_state = {
                 "rendered_video_path": result[0],
@@ -340,22 +388,8 @@ def create_gradio_interface():
             return result[0], result[1], result[2], result[3], result[4], new_state
 
         def save_all_results(state):
-            """
-            save all analysis results from stored state.
-
-            Parameters
-            ----------
-            state : dict
-                dictionary containing all analysis results
-
-            Returns
-            -------
-            str
-                status message about save operation
-            """
             try:
-                import os
-                import shutil
+                import os, shutil
                 from datetime import datetime
 
                 if (
@@ -382,33 +416,24 @@ def create_gradio_interface():
                 if correction_graph is not None:
                     fig_path = os.path.join(pose_dir, "correction_analysis.png")
                     correction_graph.savefig(fig_path, dpi=150, bbox_inches="tight")
-                    saved_files.append(
-                        f"📊 Correction graph: {os.path.basename(fig_path)}"
-                    )
+                    saved_files.append(f"📊 {os.path.basename(fig_path)}")
 
                 if rendered_video_path and os.path.exists(rendered_video_path):
                     video_path = os.path.join(pose_dir, "keypoint_video.mp4")
                     shutil.copy2(rendered_video_path, video_path)
-                    saved_files.append(
-                        f"🎬 Rendered video: {os.path.basename(video_path)}"
-                    )
+                    saved_files.append(f"🎬 {os.path.basename(video_path)}")
 
                 if correction_video_path and os.path.exists(correction_video_path):
                     correction_video_save_path = os.path.join(
                         pose_dir, "correction_video.mp4"
                     )
                     shutil.copy2(correction_video_path, correction_video_save_path)
-                    saved_files.append(
-                        f"🎨 Correction video: {os.path.basename(correction_video_save_path)}"
-                    )
+                    saved_files.append(f"🎨 {os.path.basename(correction_video_save_path)}")
 
                 if saved_files:
-                    return (
-                        f"✅ Results saved to: {pose_dir}\n\nSaved files:\n"
-                        + "\n".join(saved_files)
-                    )
+                    return f"✅ Results saved to `{pose_dir}`:\n" + "\n".join(saved_files)
                 else:
-                    return "❌ No files were saved. Check if analysis was completed successfully."
+                    return "❌ No files were saved. Please re-run analysis."
 
             except Exception as e:
                 return f"❌ Error saving results: {str(e)}"
@@ -426,26 +451,17 @@ def create_gradio_interface():
             ],
         )
 
-        sample_btn.click(
-            fn=load_sample_video,
-            outputs=[video_input],
-        )
-
-        save_btn.click(
-            fn=save_all_results,
-            inputs=[analysis_state],
-            outputs=[save_status],
-        )
+        sample_btn.click(fn=load_sample_video, outputs=[video_input])
+        save_btn.click(fn=save_all_results, inputs=[analysis_state], outputs=[save_status])
 
     return app
-
 
 def main():
     """main function to launch the Gradio app."""
     app = create_gradio_interface()
     app.launch(
         server_name="127.0.0.1",
-        server_port=8080,
+        server_port=7860,
         share=False,
         show_error=True,
     )
