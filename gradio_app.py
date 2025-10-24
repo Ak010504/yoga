@@ -3,6 +3,17 @@ gradio web interface for pose classification and correction analysis.
 Updated with modern UI and fixed correction data logic.
 """
 
+DISPLAY_NAME_MAPPING = {
+    'chair': 'Utkatasana',
+    'cobra': 'Bhujangasana',
+    'downdog': 'Adho Mukha Svanasana',
+    'goddess': 'Utkata Konasana',
+    'surya_namaskar': 'Surya Namaskar',
+    'tree': 'Vrikshasana',
+    'warrior': 'Virabhadrasana',
+}
+
+
 import os
 import tempfile
 import warnings
@@ -48,6 +59,7 @@ def generate_correction_feedback(correction_data, predicted_pose):
     str
         Markdown-formatted correction feedback
     """
+    display_name = DISPLAY_NAME_MAPPING.get(predicted_pose, predicted_pose.title())
     if correction_data is None or correction_data.get("status") != "success":
         return "**No corrections available.**"
     
@@ -81,7 +93,7 @@ def generate_correction_feedback(correction_data, predicted_pose):
         feedback_items = []
         
         for i, feature_name in enumerate(feature_names):
-            # ✅ FIXED: Use full arrays - they're already aligned
+            #  FIXED: Use full arrays - they're already aligned
             input_angles = input_data[:, i]  # (110,)
             corrected_angles = corrected_data[:, i]  # (110,)
             
@@ -135,11 +147,11 @@ def generate_correction_feedback(correction_data, predicted_pose):
         
         # Build feedback message
         if feedback_items:
-            feedback_md = f"### 🎯 Correction Suggestions for **{predicted_pose.title()}** Pose:\n\n"
+            feedback_md = f"###  Correction Suggestions for **{display_name}** Pose:\n\n"
             feedback_md += "\n".join(feedback_items)
             feedback_md += "\n\n---\n💡 **Tip:** Make adjustments gradually and focus on maintaining proper form throughout the pose."
         else:
-            feedback_md = f"### ✅ Great job!\n\nYour **{predicted_pose.title()}** pose looks good! No major corrections needed."
+            feedback_md = f"###  Great job!\n\nYour **{display_name}** pose looks good! No major corrections needed."
         
         return feedback_md
         
@@ -486,7 +498,7 @@ footer {
 
                 # ---------------- RIGHT COLUMN ----------------
                 with gr.Column(scale=2, elem_classes="results-section"):
-                    gr.Markdown("### 📊 Analysis Results")
+                    gr.Markdown("###  Analysis Results")
 
                     with gr.Row():
                         predicted_pose = gr.Textbox(
@@ -496,19 +508,19 @@ footer {
                         )
                         video_info = gr.Markdown(label="Video Information")
 
-                    with gr.Tab("💡 Correction Feedback"):
+                    with gr.Tab(" Correction Feedback"):
                         correction_feedback = gr.Markdown(
                             value="Upload and analyze a video to see correction suggestions...",
                             label="Personalized Corrections"
                         )
 
-                    with gr.Tab("🎬 Rendered Keypoints Video"):
+                    with gr.Tab(" Rendered Keypoints Video"):
                         rendered_video = gr.Video(interactive=False, height=300)
 
-                    with gr.Tab("🎨 Correction Visualization Video"):
+                    with gr.Tab(" Correction Visualization Video"):
                         correction_video = gr.Video(interactive=False, height=300)
 
-                    with gr.Tab("📈 Correction Graph"):
+                    with gr.Tab(" Correction Graph"):
                         correction_graph = gr.Plot()
 
         # --- Define button actions ---
@@ -517,19 +529,23 @@ footer {
             if video_file is None:
                 return None, "", "", None, None, "Upload a video first.", state
 
-            # Always use all frames (hardcoded)
+    # Always use all frames (hardcoded)
             result = classify_pose_from_video(video_file, use_all_frames=True)
+
+            predicted_pose = result[1]  # <-- properly assign
+            sanskrit_pose = DISPLAY_NAME_MAPPING.get(predicted_pose, predicted_pose)  # for UI display
 
             new_state = {
                 "rendered_video_path": result[0],
-                "predicted_pose": result[1],
+                "predicted_pose": predicted_pose,  # <-- store the English/class name in state!
                 "video_info": result[2],
                 "correction_graph": result[3],
                 "correction_video_path": result[4],
                 "correction_feedback": result[5],
             }
 
-            return result[0], result[1], result[2], result[3], result[4], result[5], new_state
+            return result[0], sanskrit_pose, result[2], result[3], result[4], result[5], new_state
+
 
         def save_all_results(state):
             """Save all analysis results from stored state."""
@@ -542,7 +558,7 @@ footer {
                     or not state.get("rendered_video_path")
                     or not state.get("predicted_pose")
                 ):
-                    return "❌ No results to save. Please analyze a video first."
+                    return " No results to save. Please analyze a video first."
 
                 rendered_video_path = state["rendered_video_path"]
                 predicted_pose = state["predicted_pose"]
@@ -561,30 +577,30 @@ footer {
                 if correction_graph is not None:
                     fig_path = os.path.join(pose_dir, "correction_analysis.png")
                     correction_graph.savefig(fig_path, dpi=150, bbox_inches="tight")
-                    saved_files.append(f"📊 Correction graph: {os.path.basename(fig_path)}")
+                    saved_files.append(f" Correction graph: {os.path.basename(fig_path)}")
 
                 if rendered_video_path and os.path.exists(rendered_video_path):
                     video_path = os.path.join(pose_dir, "keypoint_video.mp4")
                     shutil.copy2(rendered_video_path, video_path)
-                    saved_files.append(f"🎬 Rendered video: {os.path.basename(video_path)}")
+                    saved_files.append(f" Rendered video: {os.path.basename(video_path)}")
 
                 if correction_video_path and os.path.exists(correction_video_path):
                     correction_video_save_path = os.path.join(
                         pose_dir, "correction_video.mp4"
                     )
                     shutil.copy2(correction_video_path, correction_video_save_path)
-                    saved_files.append(f"🎨 Correction video: {os.path.basename(correction_video_save_path)}")
+                    saved_files.append(f" Correction video: {os.path.basename(correction_video_save_path)}")
 
                 if saved_files:
                     return (
-                        f"✅ **Results saved to:** `{pose_dir}`\n\n**Saved files:**\n"
+                        f" **Results saved to:** `{pose_dir}`\n\n**Saved files:**\n"
                         + "\n".join([f"- {file}" for file in saved_files])
                     )
                 else:
-                    return "❌ No files were saved. Check if analysis was completed successfully."
+                    return " No files were saved. Check if analysis was completed successfully."
 
             except Exception as e:
-                return f"❌ Error saving results: {str(e)}"
+                return f" Error saving results: {str(e)}"
 
         # MODIFIED: Removed use_all_frames from inputs
         analyze_btn.click(
