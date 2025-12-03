@@ -382,12 +382,53 @@ def process_frame_live(frame, selected_pose, feedback_state):
 
     return frame, feedback_state, audio_path
 
+def find_peak_frames(all_angles, desired_frames=10):
+    """
+    Find 10 peak frames using SAME LOGIC as model training.
+    Returns frame indices of most significant pose moments.
+    """
+    if len(all_angles) < desired_frames:
+        # Pad with evenly spaced frames if too few angles
+        indices = np.linspace(0, len(all_angles)-1, desired_frames, dtype=int)
+        return [all_angles[i]['frame_idx'] for i in indices]
+    
+    # Calculate error metric (same as training)
+    error_values = []
+    for angle_data in all_angles:
+        angles = angle_data['angles']
+        # Simple error: sum of absolute deviations from neutral (90°)
+        frame_error = sum(abs(angle - 90) for angle in angles.values())
+        error_values.append(frame_error)
+    
+    # Find peaks (same parameters as training)
+    from scipy.signal import find_peaks
+    peaks, properties = find_peaks(
+        error_values, 
+        distance=3, 
+        prominence=0.1
+    )
+    
+    if len(peaks) >= desired_frames:
+        # Take top N by prominence
+        top_indices = np.argsort(properties['prominences'])[-desired_frames:]
+        peak_frame_indices = [all_angles[peaks[i]]['frame_idx'] for i in top_indices]
+    else:
+        # Fill gaps iteratively (same as training)
+        peak_frame_indices = [all_angles[p]['frame_idx'] for p in peaks]
+        while len(peak_frame_indices) < desired_frames:
+            if len(peak_frame_indices) == 0:
+                peak_frame_indices = [0]
+            diffs = np.diff(peak_frame_indices)
+            max_gap_idx = np.argmax(diffs)
+            insert_frame = int((peak_frame_indices[max_gap_idx] + peak_frame_indices[max_gap_idx+1]) / 2)
+            peak_frame_indices.insert(max_gap_idx + 1, insert_frame)
+    
+    return sorted(peak_frame_indices[:desired_frames])
 
 def process_video_with_corrections(video_file, selected_pose):
     """
-    Process video in real-time with corrections for the selected pose.
-    No classification - directly use the user-selected pose.
-    Generates audio that will auto-play.
+    Process video with corrections at 10 PEAK FRAMES only (model-aligned).
+    Uses same peak frame selection as training → exactly 10 feedbacks.
     """
     feedback_log = []
     audio_files = []
@@ -396,44 +437,84 @@ def process_video_with_corrections(video_file, selected_pose):
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     # Temporary video file for rendered output
     temp_video_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-    fourcc = cv2.VideoWriter_fourcc(*"H264")
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
     out = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
     
     if not out.isOpened():
-        print("MJPEG not available, trying H264...")
-        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        fourcc = cv2.VideoWriter_fourcc(*"H264")
         out = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
-
+    
     if not out.isOpened():
         fourcc = -1
         out = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
+    
     processor.frame_count = 0
     frame_idx = 0
     last_audio_path = None
+    
+    # COLLECT ALL FRAME ANGLES FIRST (for peak detection)
+    print("🔍 Step 1: Extracting angles from all frames...")
+    all_angles = []
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        landmarks, success = processor.process_frame(frame)
+        if success and landmarks:
+            angles = processor.get_current_angles(landmarks)
+            if angles:
+                all_angles.append({
+                    'frame_idx': frame_idx,
+                    'angles': angles,
+                    'landmarks': landmarks
+                })
+        
+        frame_idx += 1
+    
+    cap.release()
+    
+    # CALCULATE PEAK FRAMES (same logic as training)
+    print("🔍 Step 2: Finding 10 peak frames...")
+    peak_frame_indices = find_peak_frames(all_angles)
+    
+    print(f"✅ Found peak frames at: {peak_frame_indices}")
+    
+    # RESET and process video again, generating feedback ONLY at peak frames
+    cap = cv2.VideoCapture(video_file)
+    frame_idx = 0
+    feedback_processed = set()  # Track which peak frames got feedback
     
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
         
-        frame_idx += 1
+        current_peak_idx = None
+        for i, peak_frame in enumerate(peak_frame_indices):
+            if abs(frame_idx - peak_frame) <= 2:  # ±2 frame tolerance
+                current_peak_idx = i
+                break
         
-        # Process frame
         landmarks, success = processor.process_frame(frame)
         
         if success and landmarks:
             angles = processor.get_current_angles(landmarks)
             
-            # Generate feedback every 2 seconds (60 frames at 30fps)
-            if frame_idx % 60 == 0 and angles:
-                feedback_text, audio_path, severity, has_corrections = generate_correction_feedback(angles, selected_pose)
+            # GENERATE FEEDBACK ONLY AT PEAK FRAMES (exactly 10 times)
+            if current_peak_idx is not None and current_peak_idx not in feedback_processed and angles:
+                feedback_text, audio_path, severity, has_corrections = generate_correction_feedback(
+                    angles, selected_pose
+                )
                 
                 feedback_log.append({
                     'timestamp': frame_idx / fps,
-                    'pose': selected_pose,
+                    'peak_frame': current_peak_idx + 1,  # 1-indexed for UI
                     'feedback': feedback_text,
                     'severity': severity,
                     'has_corrections': has_corrections
@@ -441,41 +522,45 @@ def process_video_with_corrections(video_file, selected_pose):
                 
                 if audio_path:
                     audio_files.append(audio_path)
-                    last_audio_path = audio_path  # Keep track of latest audio
+                    last_audio_path = audio_path
+                
+                feedback_processed.add(current_peak_idx)
+                print(f"✅ Feedback #{current_peak_idx+1}/10 generated at frame {frame_idx}")
             
-            # Render landmarks
+            # Render landmarks (all frames)
             try:
                 frame = render_landmarks(frame, landmarks)
             except:
                 pass
         
-        # Write frame to output video
         out.write(frame)
         
-        # Yield progress (every 60 frames)
-        if frame_idx % 10 == 0:
+        # Yield progress every 15 frames
+        if frame_idx % 15 == 0:
             yield {
                 'video_path': temp_video_path,
                 'feedback_log': feedback_log,
                 'audio_files': audio_files,
                 'frame_count': frame_idx,
-                'progress': f"Processing... {frame_idx} frames processed",
-                'last_audio': last_audio_path  # Latest audio for auto-play
+                'progress': f"Processing... {frame_idx}/{total_frames} frames ({len(feedback_log)}/10 feedbacks)",
+                'last_audio': last_audio_path
             }
+        
+        frame_idx += 1
     
     cap.release()
     out.release()
     
-    # Final yield with complete results
+    # Final yield
     yield {
         'video_path': temp_video_path,
         'feedback_log': feedback_log,
         'audio_files': audio_files,
-        'frame_count': frame_idx,
-        'progress': f"✅ Complete! {frame_idx} frames processed",
+        'frame_count': total_frames,
+        'progress': f"✅ Complete! {len(feedback_log)} peak frame feedbacks generated",
         'last_audio': last_audio_path
     }
-
+    
 def create_gradio_interface():
     """Create Gradio dashboard for real-time correction with auto-play audio."""
     theme = gr.themes.Soft(
