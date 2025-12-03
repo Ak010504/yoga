@@ -1,6 +1,7 @@
 """
-gradio web interface for pose classification and correction analysis.
-Updated with modern UI and fixed correction data logic.
+gradio web interface for REAL-TIME CORRECTION ONLY (no classification).
+SIMPLIFIED AUDIO: Says only the corrections, not the pose name.
+Example: "Increase Left Elbow by 74.1 degrees" (not "Your Vrikshasana...")
 """
 
 DISPLAY_NAME_MAPPING = {
@@ -13,25 +14,81 @@ DISPLAY_NAME_MAPPING = {
     'warrior': 'Virabhadrasana',
 }
 
+# Ideal angle ranges for each pose
+IDEAL_ANGLES = {
+    'tree': {
+        'left_elbow': (160, 180),
+        'right_elbow': (160, 180),
+        'left_hip': (140, 180),
+        'right_hip': (140, 180),
+    },
+    'warrior': {
+        'left_elbow': (80, 120),
+        'right_elbow': (80, 120),
+        'left_knee': (70, 100),
+        'right_knee': (70, 100),
+    },
+    'chair': {
+        'left_knee': (70, 100),
+        'right_knee': (70, 100),
+        'left_hip': (70, 110),
+        'right_hip': (70, 110),
+    },
+    'downdog': {
+        'left_elbow': (160, 180),
+        'right_elbow': (160, 180),
+        'left_hip': (160, 180),
+        'right_hip': (160, 180),
+    },
+    'cobra': {
+        'left_elbow': (70, 100),
+        'right_elbow': (70, 100),
+        'left_hip': (140, 180),
+        'right_hip': (140, 180),
+    },
+    'goddess': {
+        'left_knee': (70, 100),
+        'right_knee': (70, 100),
+        'left_hip': (60, 100),
+        'right_hip': (60, 100),
+    },
+    'surya_namaskar': {
+        'left_elbow': (80, 160),
+        'right_elbow': (80, 160),
+        'left_knee': (140, 180),
+        'right_knee': (140, 180),
+    },
+}
 
 import os
 import tempfile
 import warnings
-
 import cv2
 import gradio as gr
 import mediapipe as mp
-from classify_predict import predict_from_dataframe
-from correction_predict import predict_correction_from_dataframe
+import numpy as np
+import os
+import tempfile
+import subprocess
+from collections import deque
 from utils import (
     give_landmarks,
     render_landmarks,
-    generate_correction_graph,
-    calculate_sequence_bounds,
+    cal_angle,
 )
 
-warnings.filterwarnings("ignore")
+# Import text-to-speech library
+try:
+    import pyttsx3
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    print("Warning: pyttsx3 not installed. Install with: pip install pyttsx3")
 
+import pandas as pd
+import torch
+
+warnings.filterwarnings("ignore")
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 pose = mp_pose.Pose(
@@ -42,591 +99,606 @@ pose = mp_pose.Pose(
     min_tracking_confidence=0.5,
 )
 
-
-def generate_correction_feedback(correction_data, predicted_pose):
+def merge_audio_with_video(video_path, audio_path, output_path):
     """
-    Generate human-readable correction feedback from correction data.
-    
-    Parameters
-    ----------
-    correction_data : dict
-        Dictionary containing input_data, corrected_data, and reference_data
-    predicted_pose : str
-        Name of the predicted pose
-    
-    Returns
-    -------
-    str
-        Markdown-formatted correction feedback
+    Merge audio track with video file using ffmpeg.
+    Creates downloadable video with embedded audio.
     """
-    display_name = DISPLAY_NAME_MAPPING.get(predicted_pose, predicted_pose.title())
-    if correction_data is None or correction_data.get("status") != "success":
-        return "**No corrections available.**"
-    
     try:
-        import numpy as np
-        
-        input_data = correction_data["input_data"]  # Current pose angles
-        corrected_data = correction_data["corrected_data"]  # Ideal/corrected angles
-        
-        feature_names = [
-            "Left Elbow",
-            "Right Elbow", 
-            "Left Hip",
-            "Right Hip",
-            "Left Knee",
-            "Right Knee",
-            "Neck",
-            "Left Shoulder",
-            "Right Shoulder"
+        cmd = [
+            'ffmpeg',
+            '-i', video_path,        # Input video
+            '-i', audio_path,        # Input audio
+            '-c:v', 'copy',          # Copy video codec
+            '-c:a', 'aac',           # Audio codec
+            '-map', '0:v:0',         # Map video
+            '-map', '1:a:0',         # Map audio
+            '-y',                    # Overwrite
+            output_path
         ]
         
-        # Verify shapes match
-        if input_data.shape != corrected_data.shape:
-            print(f"Warning: Shape mismatch - input: {input_data.shape}, corrected: {corrected_data.shape}")
-            # Handle mismatch by using minimum length
-            min_len = min(input_data.shape[0], corrected_data.shape[0])
-            input_data = input_data[:min_len]
-            corrected_data = corrected_data[:min_len]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
-        # Calculate average deviation for each joint
-        feedback_items = []
-        
-        for i, feature_name in enumerate(feature_names):
-            #  FIXED: Use full arrays - they're already aligned
-            input_angles = input_data[:, i]  # (110,)
-            corrected_angles = corrected_data[:, i]  # (110,)
-            
-            # Calculate mean deviation
-            deviations = corrected_angles - input_angles
-            mean_deviation = np.mean(deviations)
-            std_deviation = np.std(deviations)
-            
-            # Only provide feedback if deviation is significant (> 5 degrees average)
-            if abs(mean_deviation) > 5:
-                # Determine direction and action
-                if "Elbow" in feature_name:
-                    if mean_deviation > 0:
-                        action = f"**Straighten** your {feature_name.lower()} by approximately **{abs(mean_deviation):.1f}°**"
-                    else:
-                        action = f"**Bend** your {feature_name.lower()} by approximately **{abs(mean_deviation):.1f}°**"
-                
-                elif "Hip" in feature_name:
-                    if mean_deviation > 0:
-                        action = f"**Open** your {feature_name.lower()} more by approximately **{abs(mean_deviation):.1f}°**"
-                    else:
-                        action = f"**Tuck** your {feature_name.lower()} by approximately **{abs(mean_deviation):.1f}°**"
-                
-                elif "Knee" in feature_name:
-                    if mean_deviation > 0:
-                        action = f"**Straighten** your {feature_name.lower()} by approximately **{abs(mean_deviation):.1f}°**"
-                    else:
-                        action = f"**Bend** your {feature_name.lower()} deeper by approximately **{abs(mean_deviation):.1f}°**"
-                
-                elif "Neck" in feature_name:
-                    if mean_deviation > 0:
-                        action = f"**Lift** your head/neck by approximately **{abs(mean_deviation):.1f}°**"
-                    else:
-                        action = f"**Lower** your head/neck by approximately **{abs(mean_deviation):.1f}°**"
-                
-                elif "Shoulder" in feature_name:
-                    if mean_deviation > 0:
-                        action = f"**Raise** your {feature_name.lower()} by approximately **{abs(mean_deviation):.1f}°**"
-                    else:
-                        action = f"**Lower** your {feature_name.lower()} by approximately **{abs(mean_deviation):.1f}°**"
-                
-                else:
-                    action = f"Adjust your {feature_name.lower()} by approximately **{abs(mean_deviation):.1f}°**"
-                
-                # Add consistency note if high variance
-                consistency_note = ""
-                if std_deviation > 10:
-                    consistency_note = " (⚠️ Try to maintain consistency)"
-                
-                feedback_items.append(f"• {action}{consistency_note}")
-        
-        # Build feedback message
-        if feedback_items:
-            feedback_md = f"###  Correction Suggestions for **{display_name}** Pose:\n\n"
-            feedback_md += "\n".join(feedback_items)
-            feedback_md += "\n\n---\n💡 **Tip:** Make adjustments gradually and focus on maintaining proper form throughout the pose."
+        if result.returncode == 0:
+            print(f"✅ Audio merged: {output_path}")
+            return output_path
         else:
-            feedback_md = f"###  Great job!\n\nYour **{display_name}** pose looks good! No major corrections needed."
-        
-        return feedback_md
-        
+            print(f"⚠️ FFmpeg error: {result.stderr}")
+            return None
     except Exception as e:
-        print(f"Error generating correction feedback: {e}")
-        import traceback
-        traceback.print_exc()
-        return f"**Error generating correction feedback:** {str(e)}"
-
-
-
-def classify_pose_from_video(video_file, use_all_frames=True):
-    """
-    classify pose from uploaded video file and create rendered video with landmarks and correction graphs.
-    """
-    try:
-        print("Step 1: Extracting landmarks from video...")
-        landmarks_df, landmark_mp_list = give_landmarks(video_file, "", fps=30)
-        
-        print("Step 2: Predicting pose...")
-        predicted_pose = predict_from_dataframe(landmarks_df)
-        print(f"Predicted pose: {predicted_pose}")
-
-        correction_data = None
-        correction_graph = None
-        correction_feedback = "**No correction feedback available yet.**"  # Initialize
-
-        # Try to get correction data
-        try:
-            print("Step 3: Getting correction data...")
-            correction_data = predict_correction_from_dataframe(
-                landmarks_df, predicted_pose
-            )
-            print(f"Correction data received: {correction_data is not None}")
-            
-            if correction_data is not None and correction_data.get("status") == "success":
-                print("Step 4: Generating correction graph...")
-                data_input = correction_data["input_data"]
-                outputs = correction_data["corrected_data"]
-                data_original = correction_data["reference_data"]
-                
-                correction_graph = generate_correction_graph(
-                    data_input, outputs, data_original, predicted_pose
-                )
-                print("Correction graph generated successfully")
-                
-                # **NEW: Generate correction feedback**
-                print("Step 4b: Generating correction feedback...")
-                correction_feedback = generate_correction_feedback(
-                    correction_data, predicted_pose
-                )
-                print("Correction feedback generated successfully")
-            else:
-                print("Correction data not available or failed")
-                correction_feedback = "**Correction analysis not available for this pose.**"
-                
-        except Exception as e:
-            print(f"Error during correction analysis: {e}")
-            correction_data = None
-            correction_feedback = f"**Error generating corrections:** {str(e)}"
-
-        print("Step 5: Creating rendered video...")
-        rendered_video_path = create_rendered_video_simple(video_file, landmark_mp_list)
-
-        correction_video_path = None
-        if correction_data is not None and correction_data.get("status") == "success":
-            print("Step 6: Creating correction visualization video...")
-            try:
-                correction_video_path = create_correction_visualization_video(
-                    video_file, landmark_mp_list, correction_data
-                )
-                print("Correction video created successfully")
-            except Exception as e:
-                print(f"Error creating correction video: {e}")
-                correction_video_path = None
-
-        video_info = f"**Frames processed:** {len(landmarks_df)}"
-
-        # **MODIFIED: Include correction_feedback in return tuple**
-        return (
-            rendered_video_path,
-            predicted_pose,
-            video_info,
-            correction_graph,
-            correction_video_path,
-            correction_feedback,  # <-- ADD THIS
-        )
-
-    except Exception as e:
-        print(f"Error in classify_pose_from_video: {e}")
-        import traceback
-        traceback.print_exc()
-        return None, f"Error: {str(e)}", "", None, None, "**Error during analysis.**"
-
-
-def create_rendered_video_simple(video_file, landmark_mp_list):
-    """
-    create a video with rendered pose landmarks (original rendering).
-
-    Parameters
-    ----------
-    video_file : str
-        path to original video file
-    landmark_mp_list : list
-        list of MediaPipe pose results
-
-    Returns
-    -------
-    str
-        path to rendered video file
-    """
-    cap = cv2.VideoCapture(video_file)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-    frame_count = 0
-    landmark_idx = 0
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if landmark_idx < len(landmark_mp_list):
-            landmarks = landmark_mp_list[landmark_idx].pose_landmarks
-            if landmarks is not None:
-                try:
-                    frame = render_landmarks(frame, landmarks)
-                except Exception:
-                    pass
-            landmark_idx += 1
-
-        out.write(frame)
-        frame_count += 1
-
-    cap.release()
-    out.release()
-
-    return output_path
-
-
-def create_correction_visualization_video(
-    video_file, landmark_mp_list, correction_data
-):
-    """
-    create a video with rendered pose landmarks showing correction-based gradient colors.
-
-    Parameters
-    ----------
-    video_file : str
-        path to original video file
-    landmark_mp_list : list
-        list of MediaPipe pose results
-    correction_data : dict
-        dictionary containing correction data for gradient colors
-
-    Returns
-    -------
-    str
-        path to correction visualization video file
-    """
-    cap = cv2.VideoCapture(video_file)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    output_path = tempfile.NamedTemporaryFile(
-        suffix="_correction.mp4", delete=False
-    ).name
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-    seq_bounds = calculate_sequence_bounds(landmark_mp_list)
-
-    frame_count = 0
-    landmark_idx = 0
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if landmark_idx < len(landmark_mp_list):
-            landmarks = landmark_mp_list[landmark_idx].pose_landmarks
-            if landmarks is not None:
-                try:
-                    frame = render_landmarks(
-                        frame,
-                        landmarks,
-                        correction_data=correction_data,
-                        frame_idx=landmark_idx,
-                        seq_bounds=seq_bounds,
-                    )
-                except Exception:
-                    frame = render_landmarks(frame, landmarks)
-            landmark_idx += 1
-
-        out.write(frame)
-        frame_count += 1
-
-    cap.release()
-    out.release()
-
-    return output_path
-
-
-def load_sample_video():
-    """
-    load the sample video from assets folder.
-
-    Returns
-    -------
-    str
-        path to the sample video file
-    """
-    sample_video_path = "assets/sample_wrong.mp4"
-    if os.path.exists(sample_video_path):
-        return sample_video_path
-    else:
+        print(f"Error merging audio: {e}")
         return None
 
 
+# Global state for real-time processing
+class RealtimeCorrectionProcessor:
+    """
+    Real-time yoga correction analyzer without classification.
+    Users manually select the pose, app provides corrections.
+    """
+    
+    def __init__(self, max_history=30):
+        self.frame_buffer = deque(maxlen=max_history)
+        self.landmarks_history = deque(maxlen=max_history)
+        self.frame_count = 0
+        
+    def process_frame(self, frame):
+        """Process a single frame and extract landmarks."""
+        try:
+            results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            
+            if results.pose_landmarks:
+                self.landmarks_history.append(results.pose_landmarks)
+                self.frame_count += 1
+                return results.pose_landmarks, True
+            else:
+                return None, False
+        except Exception as e:
+            print(f"Error processing frame: {e}")
+            return None, False
+    
+    def get_current_angles(self, landmarks):
+        """Extract angles from current landmarks."""
+        try:
+            if not landmarks:
+                return None
+            
+            # landmarks is a NormalizedLandmarkList, access via .landmark
+            lm_list = landmarks.landmark
+            
+            # Check if we have enough landmarks
+            if len(lm_list) < 29:
+                return None
+            
+            # Extract angles between key joints
+            angles = {}
+            
+            # Elbow angles
+            angles['left_elbow'] = cal_angle(
+                (lm_list[11].x, lm_list[11].y),  # Left shoulder
+                (lm_list[13].x, lm_list[13].y),  # Left elbow
+                (lm_list[15].x, lm_list[15].y),  # Left wrist
+            )
+            angles['right_elbow'] = cal_angle(
+                (lm_list[12].x, lm_list[12].y),
+                (lm_list[14].x, lm_list[14].y),
+                (lm_list[16].x, lm_list[16].y),
+            )
+            
+            # Hip angles
+            angles['left_hip'] = cal_angle(
+                (lm_list[24].x, lm_list[24].y),
+                (lm_list[26].x, lm_list[26].y),
+                (lm_list[28].x, lm_list[28].y),
+            )
+            angles['right_hip'] = cal_angle(
+                (lm_list[23].x, lm_list[23].y),
+                (lm_list[25].x, lm_list[25].y),
+                (lm_list[27].x, lm_list[27].y),
+            )
+            
+            # Knee angles
+            angles['left_knee'] = cal_angle(
+                (lm_list[23].x, lm_list[23].y),
+                (lm_list[26].x, lm_list[26].y),
+                (lm_list[28].x, lm_list[28].y),
+            )
+            angles['right_knee'] = cal_angle(
+                (lm_list[24].x, lm_list[24].y),
+                (lm_list[25].x, lm_list[25].y),
+                (lm_list[27].x, lm_list[27].y),
+            )
+            
+            return angles
+        except Exception as e:
+            print(f"Error computing angles: {e}")
+            return None
+
+# Initialize processor
+processor = RealtimeCorrectionProcessor()
+
+def text_to_speech_realtime(text, output_path=None):
+    """
+    Convert text feedback to speech audio and return path.
+    This audio will be automatically played in the UI.
+    """
+    if not TTS_AVAILABLE:
+        return None
+    
+    try:
+        clean_text = text.replace("**", "").replace("###", "").replace("#", "")
+        clean_text = clean_text.replace("•", "").replace("\n", " ").strip()
+        
+        if not output_path:
+            output_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+        
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 180)  # Faster for real-time
+        engine.setProperty('volume', 0.95)
+        
+        try:
+            voices = engine.getProperty('voices')
+            if len(voices) > 1:
+                engine.setProperty('voice', voices[1].id)
+        except:
+            pass
+        
+        engine.save_to_file(clean_text, output_path)
+        engine.runAndWait()
+        
+        return output_path
+    except Exception as e:
+        print(f"Error generating speech: {e}")
+        return None
+
+def generate_correction_feedback(angles, selected_pose):
+    """
+    Generate correction feedback based on angles and selected pose.
+    
+    AUDIO: Says ONLY the corrections (e.g., "Increase Left Elbow by 74.1 degrees")
+           NOT the pose name. For perfect form, says encouraging message.
+    
+    TEXT: Shows pose name + corrections (for UI display)
+    
+    Returns: (feedback_text, audio_path, severity, has_corrections)
+    """
+    if not angles or not selected_pose:
+        return "", None, "info", False
+    
+    display_name = DISPLAY_NAME_MAPPING.get(selected_pose, selected_pose.title())
+    pose_ideals = IDEAL_ANGLES.get(selected_pose, {})
+    
+    feedback_text = ""
+    severity = "info"
+    has_corrections = False
+    
+    try:
+        corrections = []
+        for angle_name, angle_value in angles.items():
+            if angle_name in pose_ideals:
+                ideal_min, ideal_max = pose_ideals[angle_name]
+                
+                if angle_value < ideal_min:
+                    has_corrections = True
+                    diff = ideal_min - angle_value
+                    if diff > 20:
+                        severity = "alert"
+                    elif diff > 10:
+                        severity = "warning"
+                    
+                    readable_name = angle_name.replace('_', ' ').title()
+                    corrections.append(
+                        f"Increase {readable_name} by {diff:.1f} degrees"
+                    )
+                elif angle_value > ideal_max:
+                    has_corrections = True
+                    diff = angle_value - ideal_max
+                    if diff > 20:
+                        severity = "alert"
+                    elif diff > 10:
+                        severity = "warning"
+                    
+                    readable_name = angle_name.replace('_', ' ').title()
+                    corrections.append(
+                        f"Decrease {readable_name} by {diff:.1f} degrees"
+                    )
+        
+        if corrections:
+            # TEXT FEEDBACK: Include pose name (for UI)
+            feedback_text = f"**{display_name}** - Adjustments needed:\n"
+            feedback_text += "\n".join(corrections)
+            
+            # AUDIO FEEDBACK: ONLY the corrections (no pose name)
+            # Join with period for natural speech
+            audio_text = ". ".join(corrections)
+        else:
+            # PERFECT FORM: Full message for both text and audio
+            feedback_text = f"✅ Great! Your **{display_name}** form looks perfect!"
+            audio_text = f"Great! Your {display_name} form looks perfect!"
+            severity = "success"
+        
+        # Generate audio with appropriate text
+        audio_path = text_to_speech_realtime(audio_text)
+        
+        return feedback_text, audio_path, severity, has_corrections
+    
+    except Exception as e:
+        print(f"Error generating feedback: {e}")
+        return f"Error: {str(e)}", None, "alert", False
+def process_frame_live(frame, selected_pose, feedback_state):
+    """
+    Live webcam processing: single frame → corrected frame + updated feedback + audio.
+    frame: HxWx3 (numpy, BGR) from webcam
+    selected_pose: key from DISPLAY_NAME_MAPPING
+    feedback_state: accumulated feedback text (gr.State)
+    """
+    if frame is None or not selected_pose:
+        return frame, (feedback_state or ""), None
+
+    # Use the same processor & pose graph
+    landmarks, success = processor.process_frame(frame)
+    if not success or landmarks is None:
+        return frame, (feedback_state or ""), None
+
+    angles = processor.get_current_angles(landmarks)
+    if not angles:
+        return frame, (feedback_state or ""), None
+
+    # Feedback & audio (same logic as video path)
+    feedback_text, audio_path, severity, has_corrections = generate_correction_feedback(
+        angles, selected_pose
+    )
+
+    # Update feedback log (keep last 10 lines)
+    if feedback_text:
+        if feedback_state is None:
+            feedback_state = ""
+        feedback_state = feedback_state + f"\n{feedback_text}"
+        feedback_state = "\n".join(feedback_state.splitlines()[-10:])
+
+    # OPTIONAL: build simple correction_data so render_landmarks can color joints
+    try:
+        angle_vec = np.zeros(9, dtype=float)
+        angle_vec[0] = angles.get('left_elbow', 0.0)
+        angle_vec[1] = angles.get('right_elbow', 0.0)
+        angle_vec[2] = angles.get('left_hip', 0.0)
+        angle_vec[3] = angles.get('right_hip', 0.0)
+        angle_vec[4] = angles.get('left_knee', 0.0)
+        angle_vec[5] = angles.get('right_knee', 0.0)
+        correction_data = {
+            "input_data": angle_vec.reshape(1, -1),
+            "corrected_data": angle_vec.reshape(1, -1),
+        }
+
+        frame = render_landmarks(
+            frame,
+            landmarks,
+            correction_data=correction_data,
+            frameidx=0,
+            seqbounds=None
+        )
+    except Exception as e:
+        print(f"Error in render_landmarks (live): {e}")
+
+    return frame, feedback_state, audio_path
+
+
+def process_video_with_corrections(video_file, selected_pose):
+    """
+    Process video in real-time with corrections for the selected pose.
+    No classification - directly use the user-selected pose.
+    Generates audio that will auto-play.
+    """
+    feedback_log = []
+    audio_files = []
+    
+    cap = cv2.VideoCapture(video_file)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Temporary video file for rendered output
+    temp_video_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+    fourcc = cv2.VideoWriter_fourcc(*"H264")
+    out = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
+    
+    if not out.isOpened():
+        print("MJPEG not available, trying H264...")
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        out = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
+
+    if not out.isOpened():
+        fourcc = -1
+        out = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
+    processor.frame_count = 0
+    frame_idx = 0
+    last_audio_path = None
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        frame_idx += 1
+        
+        # Process frame
+        landmarks, success = processor.process_frame(frame)
+        
+        if success and landmarks:
+            angles = processor.get_current_angles(landmarks)
+            
+            # Generate feedback every 2 seconds (60 frames at 30fps)
+            if frame_idx % 60 == 0 and angles:
+                feedback_text, audio_path, severity, has_corrections = generate_correction_feedback(angles, selected_pose)
+                
+                feedback_log.append({
+                    'timestamp': frame_idx / fps,
+                    'pose': selected_pose,
+                    'feedback': feedback_text,
+                    'severity': severity,
+                    'has_corrections': has_corrections
+                })
+                
+                if audio_path:
+                    audio_files.append(audio_path)
+                    last_audio_path = audio_path  # Keep track of latest audio
+            
+            # Render landmarks
+            try:
+                frame = render_landmarks(frame, landmarks)
+            except:
+                pass
+        
+        # Write frame to output video
+        out.write(frame)
+        
+        # Yield progress (every 60 frames)
+        if frame_idx % 10 == 0:
+            yield {
+                'video_path': temp_video_path,
+                'feedback_log': feedback_log,
+                'audio_files': audio_files,
+                'frame_count': frame_idx,
+                'progress': f"Processing... {frame_idx} frames processed",
+                'last_audio': last_audio_path  # Latest audio for auto-play
+            }
+    
+    cap.release()
+    out.release()
+    
+    # Final yield with complete results
+    yield {
+        'video_path': temp_video_path,
+        'feedback_log': feedback_log,
+        'audio_files': audio_files,
+        'frame_count': frame_idx,
+        'progress': f"✅ Complete! {frame_idx} frames processed",
+        'last_audio': last_audio_path
+    }
+
 def create_gradio_interface():
-    """
-    Create a modern Gradio dashboard for PosePilot with fixed correction logic.
-    """
+    """Create Gradio dashboard for real-time correction with auto-play audio."""
     theme = gr.themes.Soft(
         primary_hue="blue",
         secondary_hue="slate",
         neutral_hue="slate",
         text_size="md",
-        font=["Inter", "system-ui", "sans-serif"]
+        font=["Inter", "system-ui", "sans-serif"],
     )
 
     custom_css = """
-.gradio-container {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-    min-height: 100vh;
-}
+    .gradio-container {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        min-height: 100vh;
+    }
+    .main-content {
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    }
+    .live-section {
+        background: linear-gradient(135deg, #1f2937 0%, #374151 100%);
+        border-radius: 12px;
+        padding: 20px;
+        color: white;
+    }
+    .success { color: #10b981; }
+    .warning { color: #f59e0b; }
+    .alert { color: #ef4444; }
+    
+    /* Auto-play audio element */
+    audio {
+        width: 100%;
+        margin-top: 10px;
+    }
+    """
 
-.main-content {
-    background: rgba(255, 255, 255, 0.95);
-    border-radius: 12px;
-    padding: 24px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-    backdrop-filter: blur(10px);
-}
-
-/* OVERRIDE GRADIO MARKDOWN WHITE TEXT */
-.prose * {
-    color: #1f2937 !important;
-}
-.prose strong, .prose span, .prose p, .prose b {
-    color: #1f2937 !important;
-}
-
-.upload-section, .results-section {
-    background: white;
-    border-radius: 8px;
-    padding: 20px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-}
-
-/* MOST AGGRESSIVE: Force all markdown and tab content to be black */
-.markdown, .markdown *, .markdown * *, .tab-content * {
-    color: #1f2937 !important;
-}
-
-/* Fix section headers */
-.upload-section h3, .results-section h3 {
-    color: #1f2937 !important;
-    font-weight: 600;
-}
-
-/* Tab navigation styling */
-.tab-nav button, .tab-nav button span {
-    color: #1f2937 !important;
-    font-weight: 500;
-}
-.tab-nav button[aria-selected="true"] {
-    color: #667eea !important;
-    font-weight: 600;
-}
-.tab-nav button:hover {
-    color: #667eea !important;
-}
-.tabs > .tab-nav > button {
-    color: #1f2937 !important;
-}
-.tabs button span, .tabs button {
-    color: #1f2937 !important;
-}
-button[role="tab"], button[role="tab"] span {
-    color: #1f2937 !important;
-}
-
-/* Button styling */
-button {
-    border-radius: 6px;
-    font-weight: 500;
-}
-
-footer {
-    display: none !important;
-}
-"""
-
-
-
-    with gr.Blocks(title="", theme=theme, css=custom_css) as app:
+    with gr.Blocks(title="PosePilot - Real-Time Yoga Correction", theme=theme, css=custom_css) as app:
         
-        # --- State ---
-        analysis_state = gr.State(
-            {
-                "rendered_video_path": None,
-                "predicted_pose": None,
-                "video_info": None,
-                "correction_graph": None,
-                "correction_video_path": None,
-                "correction_feedback": None,
-            }
-        )
-
-        # --- Main layout with container ---
         with gr.Column(elem_classes="main-content"):
+            gr.Markdown("# 🧘 Real-Time Yoga Correction System")
+            gr.Markdown("Select your asana, upload video **OR** use webcam for **instant audio feedback** on your posture")
+            
+            # Global audio (auto-plays on all tabs)
+            gr.Markdown("**🔔 Audio auto-plays on all tabs**")
+            global_audio = gr.Audio(
+                label="Global Audio (Auto-plays)",
+                interactive=False,
+                autoplay=True,
+                visible=True
+            )
             
             with gr.Row():
-                # ---------------- LEFT COLUMN ----------------
-                with gr.Column(scale=1, elem_classes="upload-section"):
-                    gr.Markdown("### 📤 Upload Video")
-                    video_input = gr.Video(label="Upload Your Pose Video", height=200)
+                # Input section
+                with gr.Column(scale=1):
+                    gr.Markdown("### 📋 Setup")
+                    
+                    # Dropdown to select pose
+                    pose_dropdown = gr.Dropdown(
+                        choices=list(DISPLAY_NAME_MAPPING.keys()),
+                        label="Select Yoga Asana",
+                        value="tree",
+                        info="Choose the yoga pose you're performing"
+                    )
+                    
+                    gr.Markdown("### 📹 Upload Video (Button Required)")
+                    video_input = gr.Video(label="Your Yoga Video", height=250)
+                    analyze_btn = gr.Button("▶️ Analyze & Correct", variant="primary", size="lg")
+                    
+                    gr.Markdown("### 📷 Live Webcam (Instant - No Button)")
+                    webcam_input = gr.Image(
+                        sources=["webcam"],
+                        streaming=True,
+                        label="Webcam Input (Auto-starts)",
+                        type="numpy",
+                        height=250,
+                    )
+                
+                # Results section
+                with gr.Column(scale=2, elem_classes="live-section"):
+                    gr.Markdown("### 📊 Real-Time Feedback")
+                    
+                    progress_status = gr.Textbox(
+                        label="Processing Status",
+                        value="Ready to analyze",
+                        interactive=False
+                    )
+                    
+                    with gr.Tabs():
+                        with gr.Tab("🎬 Uploaded Video Stream"):
+                            live_video = gr.Video(
+                                interactive=False,
+                                height=300,
+                                format="mp4",
+                                label="Video with Landmarks & Corrections"
+                            )
+                        
+                        with gr.Tab("📷 Live Webcam Stream"):
+                            live_webcam = gr.Image(
+                                label="Live Webcam Corrections",
+                                interactive=False,
+                                height=300,
+                            )
+                        
+                        with gr.Tab("🔊 Live Audio Feedback"):
+                            gr.Markdown("**🔔 Audio plays automatically - Just the corrections, no pose name**")
+                            audio_stream = gr.Audio(
+                                label="Real-Time Corrections (Auto-Play)",
+                                interactive=False,
+                                autoplay=True
+                            )
+                        
+                        with gr.Tab("📋 Feedback Log"):
+                            feedback_display = gr.Textbox(
+                                label="Real-Time Corrections Timeline",
+                                lines=10,
+                                interactive=False,
+                                max_lines=20
+                            )
 
-                    # REMOVED: use_all_frames checkbox
-                    # REMOVED: sample_btn button
+        # State for live webcam feedback accumulation
+        feedback_state = gr.State("")
 
-                    analyze_btn = gr.Button("🚀 Analyze Video", variant="primary", size="lg")
-                    save_btn = gr.Button("💾 Save Results", variant="secondary", size="lg")
-                    save_status = gr.Markdown(label="Save Status")
-
-                # ---------------- RIGHT COLUMN ----------------
-                with gr.Column(scale=2, elem_classes="results-section"):
-                    gr.Markdown("###  Analysis Results")
-
-                    with gr.Row():
-                        predicted_pose = gr.Textbox(
-                            label="Predicted Pose",
-                            placeholder="Pose name will appear here...",
-                            interactive=False
+        # Define streaming callback (your existing uploaded video logic)
+        def analyze_video(video_file, selected_pose):
+            if video_file is None or not selected_pose:
+                yield (
+                    None,
+                    "❌ Please select an asana and upload a video",
+                    "No input provided",
+                    None,
+                    None
+                )
+                return
+            
+            feedback_lines = []  # Store unique feedback only
+            latest_audio = None
+            last_timestamp = None  # Track last shown timestamp
+            
+            for result in process_video_with_corrections(video_file, selected_pose):
+                feedback_log = result.get('feedback_log', [])
+                
+                # Only add NEW feedback (not already shown)
+                if feedback_log:
+                    latest_feedback = feedback_log[-1]
+                    current_timestamp = latest_feedback['timestamp']
+                    
+                    # Only add if timestamp is DIFFERENT from last one
+                    if current_timestamp != last_timestamp:
+                        feedback_lines.append(
+                            f"[{current_timestamp:.1f}s] {latest_feedback['feedback']}"
                         )
-                        video_info = gr.Markdown(label="Video Information")
+                        last_timestamp = current_timestamp
+                
+                # Get latest audio file if available (will auto-play)
+                if result.get('last_audio'):
+                    latest_audio = result['last_audio']
+                
+                # Build feedback text from unique lines (show last 10)
+                feedback_text = "\n".join(feedback_lines[-10:])
+                
+                yield (
+                    result.get('video_path'),
+                    result.get('progress'),
+                    feedback_text,
+                    latest_audio,
+                    latest_audio
+                )
 
-                    with gr.Tab(" Correction Feedback"):
-                        correction_feedback = gr.Markdown(
-                            value="Upload and analyze a video to see correction suggestions...",
-                            label="Personalized Corrections"
-                        )
+        # Live webcam processing (NEW - runs automatically)
+        def process_frame_live(frame, selected_pose, feedback_state):
+            if frame is None or not selected_pose:
+                return frame, (feedback_state or ""), None
 
-                    with gr.Tab(" Rendered Keypoints Video"):
-                        rendered_video = gr.Video(interactive=False, height=300)
+            # Use the same processor & pose graph
+            landmarks, success = processor.process_frame(frame)
+            if not success or landmarks is None:
+                return frame, (feedback_state or ""), None
 
-                    with gr.Tab(" Correction Visualization Video"):
-                        correction_video = gr.Video(interactive=False, height=300)
+            angles = processor.get_current_angles(landmarks)
+            if not angles:
+                return frame, (feedback_state or ""), None
 
-                    with gr.Tab(" Correction Graph"):
-                        correction_graph = gr.Plot()
+            # Feedback & audio (same logic as video path)
+            feedback_text, audio_path, severity, has_corrections = generate_correction_feedback(
+                angles, selected_pose
+            )
 
-        # --- Define button actions ---
-        def analyze_video(video_file, state):
-            """Analyze video with use_all_frames always set to True"""
-            if video_file is None:
-                return None, "", "", None, None, "Upload a video first.", state
+            # Update feedback log (keep last 10 lines)
+            if feedback_text:
+                if feedback_state is None:
+                    feedback_state = ""
+                feedback_state = feedback_state + f"\n{feedback_text}"
+                feedback_state = "\n".join(feedback_state.splitlines()[-10:])
 
-    # Always use all frames (hardcoded)
-            result = classify_pose_from_video(video_file, use_all_frames=True)
-
-            predicted_pose = result[1]  # <-- properly assign
-            sanskrit_pose = DISPLAY_NAME_MAPPING.get(predicted_pose, predicted_pose)  # for UI display
-
-            new_state = {
-                "rendered_video_path": result[0],
-                "predicted_pose": predicted_pose,  # <-- store the English/class name in state!
-                "video_info": result[2],
-                "correction_graph": result[3],
-                "correction_video_path": result[4],
-                "correction_feedback": result[5],
-            }
-
-            return result[0], sanskrit_pose, result[2], result[3], result[4], result[5], new_state
-
-
-        def save_all_results(state):
-            """Save all analysis results from stored state."""
+            # Render landmarks (your existing function)
             try:
-                import shutil
-                from datetime import datetime
-
-                if (
-                    not state
-                    or not state.get("rendered_video_path")
-                    or not state.get("predicted_pose")
-                ):
-                    return " No results to save. Please analyze a video first."
-
-                rendered_video_path = state["rendered_video_path"]
-                predicted_pose = state["predicted_pose"]
-                correction_graph = state["correction_graph"]
-                correction_video_path = state["correction_video_path"]
-
-                results_dir = "infer_results"
-                os.makedirs(results_dir, exist_ok=True)
-
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pose_dir = os.path.join(results_dir, f"{predicted_pose}_{timestamp}")
-                os.makedirs(pose_dir, exist_ok=True)
-
-                saved_files = []
-
-                if correction_graph is not None:
-                    fig_path = os.path.join(pose_dir, "correction_analysis.png")
-                    correction_graph.savefig(fig_path, dpi=150, bbox_inches="tight")
-                    saved_files.append(f" Correction graph: {os.path.basename(fig_path)}")
-
-                if rendered_video_path and os.path.exists(rendered_video_path):
-                    video_path = os.path.join(pose_dir, "keypoint_video.mp4")
-                    shutil.copy2(rendered_video_path, video_path)
-                    saved_files.append(f" Rendered video: {os.path.basename(video_path)}")
-
-                if correction_video_path and os.path.exists(correction_video_path):
-                    correction_video_save_path = os.path.join(
-                        pose_dir, "correction_video.mp4"
-                    )
-                    shutil.copy2(correction_video_path, correction_video_save_path)
-                    saved_files.append(f" Correction video: {os.path.basename(correction_video_save_path)}")
-
-                if saved_files:
-                    return (
-                        f" **Results saved to:** `{pose_dir}`\n\n**Saved files:**\n"
-                        + "\n".join([f"- {file}" for file in saved_files])
-                    )
-                else:
-                    return " No files were saved. Check if analysis was completed successfully."
-
+                frame = render_landmarks(frame, landmarks)
             except Exception as e:
-                return f" Error saving results: {str(e)}"
+                print(f"Error in render_landmarks (live): {e}")
 
-        # MODIFIED: Removed use_all_frames from inputs
+            return frame, feedback_state, audio_path
+
+        # Connect uploaded video button (your existing logic)
         analyze_btn.click(
             fn=analyze_video,
-            inputs=[video_input, analysis_state],
-            outputs=[
-                rendered_video,
-                predicted_pose,
-                video_info,
-                correction_graph,
-                correction_video,
-                correction_feedback,
-                analysis_state,
-            ],
+            inputs=[video_input, pose_dropdown],
+            outputs=[live_video, progress_status, feedback_display, audio_stream, global_audio]
         )
-
-        # REMOVED: sample_btn.click handler
-
-        save_btn.click(fn=save_all_results, inputs=[analysis_state], outputs=[save_status])
-
+        
+        # Live streaming from webcam: no button, runs automatically
+        webcam_input.stream(
+            fn=process_frame_live,
+            inputs=[webcam_input, pose_dropdown, feedback_state],
+            outputs=[live_webcam, feedback_display, global_audio],
+            stream_every=0.1,  # seconds between frames
+        )
+    
     return app
 
-
-
 def main():
-    """main function to launch the Gradio app."""
+    """Launch the Gradio app."""
     app = create_gradio_interface()
     app.launch(
         server_name="127.0.0.1",
@@ -634,7 +706,6 @@ def main():
         share=False,
         show_error=True,
     )
-
 
 if __name__ == "__main__":
     main()

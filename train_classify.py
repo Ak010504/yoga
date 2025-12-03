@@ -1,6 +1,7 @@
 """
 Training pipeline for classifier model.
-Modified to include Surya Namaskar and updated folder structure.
+Modified to include Surya Namaskar, updated folder structure,
+and optional random-search hyperparameter tuning.
 """
 
 import os
@@ -8,6 +9,7 @@ import pickle
 import warnings
 import argparse
 from itertools import combinations
+import random  # NEW: for random search
 
 import torch
 import numpy as np
@@ -54,12 +56,12 @@ def load_and_process_data(data_dir):
 
     for pose in tqdm(pose_classes, desc="Processing asanas"):
         pose_dir = os.path.join(data_dir, pose)
-        
+
         # Check if directory exists
         if not os.path.exists(pose_dir):
             print(f"Warning: Directory {pose_dir} not found. Skipping {pose}...")
             continue
-            
+
         file_count = 0
         # Process all CSV files directly in the pose directory (no cam subfolders)
         for file in os.listdir(pose_dir):
@@ -67,7 +69,7 @@ def load_and_process_data(data_dir):
                 file_path = os.path.join(pose_dir, file)
                 try:
                     df = pd.read_csv(file_path)
-                    
+
                     sequence = process_csv_to_sequence(
                         df, pose, file.replace(".csv", "")
                     )
@@ -77,7 +79,7 @@ def load_and_process_data(data_dir):
                 except Exception as e:
                     print(f"Error reading {file_path}: {e}")
                     continue
-        
+
         print(f"  Loaded {file_count} files for {pose}")
 
     print(f"\nTotal sequences loaded: {len(all_sequences)}")
@@ -105,14 +107,14 @@ def process_csv_to_sequence(df, pose, person):
     try:
         # Extract pose landmark data (first 132 columns: 33 landmarks × 4 values each)
         pose_data = df.iloc[:, :132].copy()
-        
+
         # Get asana label - check if 'asana' column exists, otherwise use folder name
         if "asana" in df.columns:
             asana_label = df["asana"].iloc[0]
         else:
             # Use the folder name as the label
             asana_label = pose
-        
+
         # Normalize the label (handle spaces and case)
         asana_label = str(asana_label).lower().strip().replace(" ", "_")
 
@@ -154,6 +156,7 @@ def process_csv_to_sequence(df, pose, person):
 def prepare_training_data(sequences, test_size=0.2):
     """
     prepare training and testing data for the LSTM model.
+    (Original version – uses fixed batch size later)
 
     Parameters
     ----------
@@ -170,12 +173,12 @@ def prepare_training_data(sequences, test_size=0.2):
     # Updated pose classes to include Surya Namaskar
     pose_classes = ["cobra", "tree", "goddess", "chair", "downdog", "warrior", "surya_namaskar"]
     pose_mapping = {pose: idx for idx, pose in enumerate(pose_classes)}
-    
+
     print(f"\nPose mapping: {pose_mapping}")
 
     all_features = []
     all_labels = []
-    
+
     # Track pose distribution
     pose_counts = {pose: 0 for pose in pose_classes}
 
@@ -184,20 +187,20 @@ def prepare_training_data(sequences, test_size=0.2):
             col for col in sequence.columns if col not in ["asana", "error"]
         ]
         features = sequence[feature_cols].values
-        
+
         # Get the pose label and normalize it
         pose_label = str(sequence["asana"].iloc[0]).lower().strip().replace(" ", "_")
-        
+
         if pose_label not in pose_mapping:
             print(f"Warning: Unknown pose label '{pose_label}'. Skipping sequence.")
             continue
-            
+
         label = pose_mapping[pose_label]
         pose_counts[pose_label] += 1
 
         all_features.append(features)
         all_labels.extend([label] * len(features))
-    
+
     print(f"\nPose distribution:")
     for pose, count in pose_counts.items():
         print(f"  {pose}: {count} sequences")
@@ -224,7 +227,7 @@ def prepare_training_data(sequences, test_size=0.2):
     # Check if we have enough samples for stratification
     unique, counts = np.unique(y_sequences, return_counts=True)
     min_samples = min(counts)
-    
+
     if min_samples < 2:
         print(f"Warning: Some classes have less than 2 samples. Cannot perform stratified split.")
         print(f"Class distribution: {dict(zip(unique, counts))}")
@@ -271,6 +274,108 @@ def prepare_training_data(sequences, test_size=0.2):
     )
 
     return train_loader, test_loader, scaler, pose_mapping
+
+
+def prepare_dataset_tensors(sequences, test_size=0.2):
+    """
+    prepare tensors for training and testing (without fixing batch size).
+    This is useful for hyperparameter search where batch_size changes.
+
+    Returns
+    -------
+    tuple
+        (train_tensor, test_tensor, train_labels_tensor, test_labels_tensor, scaler, pose_mapping)
+    """
+    pose_classes = ["cobra", "tree", "goddess", "chair", "downdog", "warrior", "surya_namaskar"]
+    pose_mapping = {pose: idx for idx, pose in enumerate(pose_classes)}
+    print(f"\nPose mapping: {pose_mapping}")
+
+    all_features = []
+    all_labels = []
+    pose_counts = {pose: 0 for pose in pose_classes}
+
+    for sequence in sequences:
+        feature_cols = [col for col in sequence.columns if col not in ["asana", "error"]]
+        features = sequence[feature_cols].values
+
+        pose_label = str(sequence["asana"].iloc[0]).lower().strip().replace(" ", "_")
+        if pose_label not in pose_mapping:
+            print(f"Warning: Unknown pose label '{pose_label}'. Skipping sequence.")
+            continue
+
+        label = pose_mapping[pose_label]
+        pose_counts[pose_label] += 1
+
+        all_features.append(features)
+        all_labels.extend([label] * len(features))
+
+    print(f"\nPose distribution:")
+    for pose, count in pose_counts.items():
+        print(f"  {pose}: {count} sequences")
+
+    if len(all_features) == 0:
+        raise ValueError("No valid sequences found! Check your data and pose labels.")
+
+    X = np.vstack(all_features)
+    y = np.array(all_labels)
+
+    sequence_length = 10
+    num_sequences = len(X) // sequence_length
+
+    X_truncated = X[: num_sequences * sequence_length]
+    y_truncated = y[: num_sequences * sequence_length]
+
+    X_sequences = X_truncated.reshape(num_sequences, sequence_length, -1)
+    y_sequences = y_truncated[::sequence_length]
+
+    unique, counts = np.unique(y_sequences, return_counts=True)
+    min_samples = min(counts)
+    if min_samples < 2:
+        print(f"Warning: Some classes have less than 2 samples. Cannot perform stratified split.")
+        print(f"Class distribution: {dict(zip(unique, counts))}")
+        raise ValueError("Need at least 2 samples per class for train-test split")
+
+    train_data, test_data = train_test_split(
+        np.column_stack([X_sequences.reshape(num_sequences, -1), y_sequences]),
+        test_size=test_size,
+        stratify=y_sequences,
+        random_state=42
+    )
+
+    train_features = train_data[:, :-1]
+    train_labels = train_data[:, -1]
+    test_features = test_data[:, :-1]
+    test_labels = test_data[:, -1]
+
+    train_features = train_features.reshape(-1, sequence_length, X_sequences.shape[2])
+    test_features = test_features.reshape(-1, sequence_length, X_sequences.shape[2])
+
+    scaler = StandardScaler()
+    train_scaled = scaler.fit_transform(train_features.reshape(-1, train_features.shape[2]))
+    test_scaled = scaler.transform(test_features.reshape(-1, test_features.shape[2]))
+
+    train_scaled = train_scaled.reshape(train_features.shape)
+    test_scaled = test_scaled.reshape(test_features.shape)
+
+    train_tensor = torch.tensor(train_scaled).float()
+    test_tensor = torch.tensor(test_scaled).float()
+    train_labels_tensor = torch.tensor(train_labels).long()
+    test_labels_tensor = torch.tensor(test_labels).long()
+
+    return train_tensor, test_tensor, train_labels_tensor, test_labels_tensor, scaler, pose_mapping
+
+
+def create_data_loaders_from_tensors(
+    train_tensor, test_tensor, train_labels_tensor, test_labels_tensor, batch_size=8
+):
+    """Create DataLoaders from tensors with a given batch size."""
+    train_loader = DataLoader(
+        TensorDataset(train_tensor, train_labels_tensor), batch_size=batch_size, shuffle=True
+    )
+    test_loader = DataLoader(
+        TensorDataset(test_tensor, test_labels_tensor), batch_size=batch_size, shuffle=False
+    )
+    return train_loader, test_loader
 
 
 def train_model(model, train_loader, test_loader, num_epochs=50, learning_rate=0.001):
@@ -415,6 +520,123 @@ def evaluate_model(model, test_loader, pose_mapping):
     }
 
 
+def random_search_hyperparams(
+    train_tensor,
+    test_tensor,
+    train_labels_tensor,
+    test_labels_tensor,
+    input_size,
+    sequence_length,
+    pose_mapping,
+    n_trials=10,
+):
+    """
+    Perform random search over hyperparameters for the LSTM classifier.
+
+    Parameters
+    ----------
+    n_trials : int
+        Number of random configurations to try.
+
+    Returns
+    -------
+    tuple
+        (best_config, results_list)
+    """
+
+    # Define search space
+    learning_rates = [1e-4, 3e-4, 1e-3, 3e-3]
+    hidden_sizes = [32, 64, 128]
+    num_layers_list = [1, 2]
+    batch_sizes = [8, 16, 32]
+    num_epochs_list = [10, 15, 20]  # you can increase for more serious tuning
+
+    best_config = None
+    best_accuracy = -1.0
+    results = []
+
+    num_classes = len(pose_mapping)
+
+    print("\n==============================")
+    print("Starting Random Search")
+    print("==============================\n")
+
+    for trial in range(1, n_trials + 1):
+        # Sample a random configuration
+        lr = random.choice(learning_rates)
+        hidden_size = random.choice(hidden_sizes)
+        num_layers = random.choice(num_layers_list)
+        batch_size = random.choice(batch_sizes)
+        num_epochs = random.choice(num_epochs_list)
+
+        print(f"\n--- Trial {trial}/{n_trials} ---")
+        print(f"  learning_rate = {lr}")
+        print(f"  hidden_size   = {hidden_size}")
+        print(f"  num_layers    = {num_layers}")
+        print(f"  batch_size    = {batch_size}")
+        print(f"  num_epochs    = {num_epochs}")
+
+        # Create DataLoaders for this specific batch size
+        train_loader, test_loader = create_data_loaders_from_tensors(
+            train_tensor,
+            test_tensor,
+            train_labels_tensor,
+            test_labels_tensor,
+            batch_size=batch_size,
+        )
+
+        # Create model for this configuration
+        model = ClassifyPose(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            sequence_length=sequence_length,
+            num_classes=num_classes,
+        )
+
+        # Train model
+        trained_model, history = train_model(
+            model,
+            train_loader,
+            test_loader,
+            num_epochs=num_epochs,
+            learning_rate=lr,
+        )
+
+        # Evaluate
+        evaluation = evaluate_model(trained_model, test_loader, pose_mapping)
+        acc = evaluation["accuracy"]
+        print(f"  Trial Test Accuracy: {acc*100:.2f}%")
+
+        results.append(
+            {
+                "trial": trial,
+                "learning_rate": lr,
+                "hidden_size": hidden_size,
+                "num_layers": num_layers,
+                "batch_size": batch_size,
+                "num_epochs": num_epochs,
+                "accuracy": acc,
+            }
+        )
+
+        # Track best
+        if acc > best_accuracy:
+            best_accuracy = acc
+            best_config = results[-1]
+
+    print("\n==============================")
+    print("Random Search Completed")
+    print("==============================")
+    print(f"Best accuracy: {best_accuracy*100:.2f}%")
+    print("Best configuration:")
+    for k, v in best_config.items():
+        if k != "accuracy":
+            print(f"  {k}: {v}")
+
+    return best_config, results
+
+
 def main():
     """main training pipeline."""
     parser = argparse.ArgumentParser(description="Train PosePilot LSTM model")
@@ -425,15 +647,14 @@ def main():
         "--epochs", type=int, default=50, help="Number of training epochs"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=8, help="Batch size for training"
+        "--batch_size", type=int, default=8, help="Batch size for training (single run)"
     )
     parser.add_argument(
         "--learning_rate", type=float, default=0.001, help="Learning rate"
     )
     parser.add_argument("--hidden_size", type=int, default=32, help="LSTM hidden size")
     parser.add_argument(
-        "--num_layers", type=int, default=1, help="Number of LSTM layers"
-    )
+        "--num_layers", type=int, default=1, help="Number of LSTM layers")
     parser.add_argument(
         "--sequence_length", type=int, default=10, help="Sequence length"
     )
@@ -443,6 +664,17 @@ def main():
         action="store_true",
         help="Load cached features instead of extracting",
     )
+    parser.add_argument(
+        "--random_search",
+        action="store_true",
+        help="Run random search over hyperparameters instead of single training run",
+    )
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=10,
+        help="Number of random search trials (only used with --random_search)",
+    )
 
     args = parser.parse_args()
 
@@ -450,15 +682,18 @@ def main():
     print("PosePilot Training Pipeline - Updated for 7 Classes")
     print("=" * 80)
     print(f"Configuration:")
-    print(f"  Epochs: {args.epochs}")
-    print(f"  Batch size: {args.batch_size}")
-    print(f"  Learning rate: {args.learning_rate}")
-    print(f"  Hidden size: {args.hidden_size}")
-    print(f"  Num layers: {args.num_layers}")
+    print(f"  Epochs (single run): {args.epochs}")
+    print(f"  Batch size (single run): {args.batch_size}")
+    print(f"  Learning rate (single run): {args.learning_rate}")
+    print(f"  Hidden size (single run): {args.hidden_size}")
+    print(f"  Num layers (single run): {args.num_layers}")
+    print(f"  Random search: {args.random_search}")
+    if args.random_search:
+        print(f"  Random search trials: {args.trials}")
     print("=" * 80)
 
     data_dir = args.data_dir
-    input_size = 680  # This is calculated from combinations of 17 landmarks
+    input_size = 680  # This is calculated from combinations of landmarks
     hidden_size = args.hidden_size
     num_layers = args.num_layers
     sequence_length = args.sequence_length
@@ -476,10 +711,10 @@ def main():
     else:
         print("\nLoading and processing data from CSV files...")
         sequences = load_and_process_data(data_dir)
-        
+
         if len(sequences) == 0:
             raise ValueError("No sequences were loaded! Check your data directory structure.")
-        
+
         print(f"\nProcessed {len(sequences)} sequences")
 
         print("Saving processed sequences to cache...")
@@ -487,6 +722,45 @@ def main():
             pickle.dump(sequences, f)
         print("Processed sequences cached successfully!")
 
+    # Branch 1: Random Search Mode
+    if args.random_search:
+        print("\nPreparing tensors for random search...")
+        (
+            train_tensor,
+            test_tensor,
+            train_labels_tensor,
+            test_labels_tensor,
+            scaler,
+            pose_mapping,
+        ) = prepare_dataset_tensors(sequences)
+
+        # Derive dimensions from tensors
+        input_size = train_tensor.shape[2]
+        sequence_length = train_tensor.shape[1]
+
+        best_config, search_results = random_search_hyperparams(
+            train_tensor=train_tensor,
+            test_tensor=test_tensor,
+            train_labels_tensor=train_labels_tensor,
+            test_labels_tensor=test_labels_tensor,
+            input_size=input_size,
+            sequence_length=sequence_length,
+            pose_mapping=pose_mapping,
+            n_trials=args.trials,
+        )
+
+        # Optionally save scaler and pose_mapping after random search
+        os.makedirs("models", exist_ok=True)
+        with open("models/classify_scaler.pkl", "wb") as f:
+            pickle.dump(scaler, f)
+        with open("models/pose_mapping.pkl", "wb") as f:
+            pickle.dump(pose_mapping, f)
+
+        print("\nRandom search finished. No single best model saved automatically.")
+        print("You can now re-run training with the best hyperparameters from the logs.")
+        return
+
+    # Branch 2: Normal Single-Run Training
     print("\nPreparing training data...")
     train_loader, test_loader, scaler, pose_mapping = prepare_training_data(sequences)
     print(f"\nDataset split:")
@@ -504,7 +778,7 @@ def main():
     print(f"  Trainable parameters: {trainable_params:,}")
 
     print("\n" + "=" * 80)
-    print("Starting training...")
+    print("Starting training (single run)...")
     print("=" * 80)
     trained_model, history = train_model(
         model, train_loader, test_loader, num_epochs, learning_rate
@@ -531,10 +805,10 @@ def main():
         plot_confusion_matrix(
             evaluation["labels"], evaluation["predictions"], pose_mapping
         )
-    
+
     # Create models directory if it doesn't exist
     os.makedirs("models", exist_ok=True)
-    
+
     print("\nSaving model and artifacts...")
     torch.save(trained_model.state_dict(), "models/pose_classification_model.pth")
     with open("models/classify_scaler.pkl", "wb") as f:
