@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="PosePilot - AI-driven yoga posture analysis and correction">
+    <meta name="theme-color" content="#667eea">
+    <title>🧘 PosePilot - Yoga Posture Analysis</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧘</text></svg>">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- HOME SCREEN -->
+        <div id="home-screen" class="screen active">
+            <div class="container">
+                <div class="header">
+                    <h1>🧘 PosePilot</h1>
+                    <p class="subtitle">AI-Driven Yoga Posture Analysis</p>
+                </div>
+
+                <div class="card">
+                    <label for="pose-dropdown">Select Yoga Asana:</label>
+                    <select id="pose-dropdown">
+                        <option value="">-- Choose a pose --</option>
+                    </select>
+                </div>
+
+                <div class="button-group">
+                    <button id="upload-btn" class="btn btn-primary" onclick="showUploadScreen()">
+                        📹 Upload Video
+                    </button>
+                    <button id="record-btn" class="btn btn-secondary" onclick="showRecordScreen()">
+                        🎥 Record Video
+                    </button>
+                </div>
+
+                <div class="info-box">
+                    <p>✨ Upload or record a yoga video and get personalized corrections for your form!</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- UPLOAD SCREEN -->
+        <div id="upload-screen" class="screen">
+            <div class="container">
+                <button class="btn-back" onclick="backHome()">← Back</button>
+                <h2>📹 Upload Video</h2>
+                
+                <div class="upload-area" id="upload-area">
+                    <input type="file" id="video-file" accept="video/*" hidden>
+                    <div class="upload-content" onclick="document.getElementById('video-file').click()">
+                        <p class="upload-icon">📹</p>
+                        <p class="upload-text">Click to select video or drag & drop</p>
+                        <p class="upload-hint">MP4, WebM, MOV supported</p>
+                    </div>
+                </div>
+
+                <div id="file-info" style="display: none;" class="card">
+                    <p><strong>Selected:</strong> <span id="file-name"></span></p>
+                    <button id="upload-submit-btn" class="btn btn-primary" onclick="uploadVideo()">
+                        🚀 Analyze Video
+                    </button>
+                </div>
+
+                <div id="upload-progress" style="display: none;" class="card">
+                    <p>Processing your video...</p>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <p id="progress-text">0%</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- RECORD SCREEN -->
+        <div id="record-screen" class="screen">
+            <div class="container">
+                <button class="btn-back" onclick="backHome()">← Back</button>
+                <h2>🎥 Record Video</h2>
+                
+                <div id="recording-view" style="display: none;">
+                    <video id="record-video" class="video-preview" autoplay playsinline></video>
+                    
+                    <div class="recording-controls">
+                        <button id="start-record-btn" class="btn btn-danger" onclick="startRecording()">
+                            ⏹️ Start Recording
+                        </button>
+                        <button id="stop-record-btn" class="btn btn-success" onclick="stopRecording()" style="display: none;">
+                            ⏹️ Stop Recording
+                        </button>
+                        <p id="recording-timer">00:00</p>
+                    </div>
+                </div>
+
+                <div id="recorded-view" style="display: none;">
+                    <video id="playback-video" class="video-preview" controls></video>
+                    
+                    <div class="button-group">
+                        <button class="btn btn-secondary" onclick="discardRecording()">
+                            🗑️ Discard
+                        </button>
+                        <button class="btn btn-primary" onclick="analyzeRecordedVideo()">
+                            🚀 Analyze Video
+                        </button>
+                    </div>
+                </div>
+
+                <div id="permission-denied" style="display: none;" class="card error-box">
+                    <p>❌ Camera permission denied. Please enable camera access to record videos.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- RESULTS SCREEN -->
+<div id="results-screen" class="screen">
+  <div class="container">
+    <button class="btn-back" onclick="backHome()">← Back to Home</button>
+    <h2>📊 Analysis Results</h2>
+
+    <div class="card">
+      <p><strong>Pose Analyzed:</strong> <span id="result-pose"></span></p>
+      <p><strong>Frames Analyzed:</strong> <span id="result-frames">10</span></p>
+    </div>
+
+    <!-- 🔹 Add this block -->
+    <div class="card">
+      <p><strong>Video Preview:</strong></p>
+      <video id="result-video" class="video-preview" controls></video>
+    </div>
+    <!-- 🔹 End added block -->
+
+    <div id="feedback-list"></div>
+
+    <div class="button-group">
+      <button class="btn btn-secondary" onclick="downloadResults()">
+        ⬇️ Download Results
+      </button>
+      <button class="btn btn-primary" onclick="backHome()">
+        🏠 Analyze Another
+      </button>
+    </div>
+  </div>
+</div>
+
+
+        <!-- LOADING SCREEN -->
+        <div id="loading-screen" class="screen">
+            <div class="container center">
+                <div class="spinner"></div>
+                <p id="loading-text">Processing...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/main.js"></script>
+</body>
+</html>

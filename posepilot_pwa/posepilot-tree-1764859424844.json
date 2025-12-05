@@ -1,0 +1,46 @@
+{
+  "pose": "tree",
+  "timestamp": "2025-12-04T14:43:44.839Z",
+  "feedback": [
+    {
+      "frame": 1,
+      "feedback": "Frame 1: Good alignment! Continue holding."
+    },
+    {
+      "frame": 2,
+      "feedback": "Frame 2: Good alignment! Continue holding."
+    },
+    {
+      "frame": 3,
+      "feedback": "Frame 3: Good alignment! Continue holding."
+    },
+    {
+      "frame": 4,
+      "feedback": "Frame 4: Good alignment! Continue holding."
+    },
+    {
+      "frame": 5,
+      "feedback": "Frame 5: Good alignment! Continue holding."
+    },
+    {
+      "frame": 6,
+      "feedback": "Frame 6: Good alignment! Continue holding."
+    },
+    {
+      "frame": 7,
+      "feedback": "Frame 7: Good alignment! Continue holding."
+    },
+    {
+      "frame": 8,
+      "feedback": "Frame 8: Good alignment! Continue holding."
+    },
+    {
+      "frame": 9,
+      "feedback": "Frame 9: Good alignment! Continue holding."
+    },
+    {
+      "frame": 10,
+      "feedback": "Frame 10: Good alignment! Continue holding."
+    }
+  ]
+}
