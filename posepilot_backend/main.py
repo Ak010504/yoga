@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================================
-# PosePilot FastAPI Backend - main.py (COMPLETE FIXED VERSION)
-# Uses Gradio logic: Frame-by-frame extraction + Peak detection + Real corrections
+# PosePilot FastAPI Backend - main.py (FIXED VERSION with Angle Velocity)
+# Uses angle-based velocity gating to detect stable phases
 # ============================================================================
 
 import os
@@ -23,16 +23,18 @@ from fastapi import FastAPI, WebSocket, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import mediapipe as mp
+from correction_predict import predict_correction_from_dataframe, calculate_angle_velocity
+
 
 # Import your existing model classes and prediction functions
 from classify_model import ClassifyPose
 from correction_model import CorrModel
 from classify_predict import config_model, predict
-from correction_predict import predict_correction_from_dataframe
+from correction_predict import predict_correction_from_dataframe, calculate_angle_velocity
 from utils import (
     cal_angle, cal_error, 
     structure_data, update_body_pose_landmarks,
-    correction_angles_convert, equal_rows  # ← CRITICAL IMPORTS
+    correction_angles_convert, equal_rows
 )
 
 # ============================================================================
@@ -63,6 +65,17 @@ CORRECTION_MODELS = {
 AVERAGE_LENGTHS = {
     'chair': 85, 'cobra': 144, 'downdog': 120, 'goddess': 91,
     'surya_namaskar': 122, 'tree': 110, 'warrior': 103
+}
+
+# ✅ Pose-specific velocity thresholds (degrees/frame)
+POSE_VELOCITY_THRESHOLDS = {
+    'tree': 1.5,          # Very stable pose
+    'warrior': 2.0,       # Moderately stable
+    'chair': 2.5,         # More movement expected
+    'downdog': 2.0,
+    'cobra': 1.8,
+    'goddess': 2.2,
+    'surya_namaskar': 3.0  # Flow sequence, more movement
 }
 
 # Device selection
@@ -399,12 +412,12 @@ async def get_poses():
 @app.post("/api/process-video")
 async def process_video(video: UploadFile = File(...), pose: str = Form(...)):
     """
-    Process uploaded video file and return corrections for selected pose
-    USES GRADIO'S APPROACH: Frame-by-frame extraction + Peak detection + Real model inference
+    Process uploaded video file and return corrections for selected pose.
+    Uses ANGLE-BASED velocity gating to select stable phases for feedback.
     """
     if pose not in model_state.correction_models:
         return JSONResponse(status_code=400, content={"error": f"Pose '{pose}' not found"})
-    
+
     temp_video = None
     try:
         # Save uploaded video temporarily
@@ -412,21 +425,26 @@ async def process_video(video: UploadFile = File(...), pose: str = Form(...)):
         content = await video.read()
         temp_video.write(content)
         temp_video.close()
-        
+        import time
+
+        request_start_time = time.perf_counter()
+        logger.info("⏱️ Loading time measurement started")
+
+
         logger.info(f"Processing video for pose: {pose}")
-        
-        # ✅ STEP 1: Frame-by-frame extraction (like Gradio)
+
+        # ✅ STEP 1: Frame-by-frame landmark extraction
         landmarks_df, success = extract_landmarks_from_video_frames(temp_video.name, fps=30)
-        
+
         if not success or landmarks_df is None or len(landmarks_df) == 0:
             logger.error("❌ Failed to extract landmarks from video")
             return JSONResponse(status_code=400, content={
                 "error": "Could not detect body pose in video. Please ensure:",
                 "details": ["Your full body is visible", "Lighting is adequate", "Video quality is good"]
             })
-        
+
         logger.info(f"✅ Extracted {len(landmarks_df)} frames from video")
-        
+
         # ✅ STEP 2: Calculate error metrics
         try:
             landmarks_df = cal_error(landmarks_df)
@@ -434,48 +452,87 @@ async def process_video(video: UploadFile = File(...), pose: str = Form(...)):
         except Exception as e:
             logger.error(f"❌ Error calculating metrics: {e}")
             return JSONResponse(status_code=500, content={"error": f"Failed to calculate pose metrics: {str(e)}"})
-        
+
         max_error = landmarks_df['error'].max()
         if max_error == 0:
             logger.error("❌ All error values are zero")
             return JSONResponse(status_code=400, content={"error": "No pose variation detected. Try moving more."})
-        
+
         logger.info(f"✅ Max error value: {max_error:.4f}")
         logger.info(f"✅ Using selected pose: {pose}")
-        
-        # ✅ STEP 3: Find peaks (GRADIO APPROACH - NOT select_top_frames!)
-        error_values = landmarks_df['error'].values
-        peaks, _ = find_peaks(error_values, distance=3, prominence=0.001)
-        
-        logger.info(f"📍 Found {len(peaks)} initial peaks")
-        
-        # Pad if not enough peaks
-        if len(peaks) < 10:
-            logger.warning(f"⚠️ Only {len(peaks)} peaks found, padding with top error frames")
-            all_indices = np.argsort(error_values)[-15:]
-            peaks = np.sort(np.unique(np.concatenate([peaks, all_indices])))[:10]
-        
-        # Take only top 10
-        if len(peaks) > 10:
-            peak_errors = error_values[peaks]
-            top_peak_indices = np.argsort(peak_errors)[-10:]
-            peaks = peaks[top_peak_indices]
-            peaks = np.sort(peaks)
-        
-        logger.info(f"✅ Selected {len(peaks)} peak frames for feedback")
-        
-        if len(peaks) == 0:
-            return JSONResponse(status_code=500, content={"error": "No significant pose variations detected."})
-        
-        # ✅ STEP 4: Generate feedback for each peak frame
+
+        # ✅ STEP 3: Apply ANGLE-BASED VELOCITY GATING (FIXED VERSION)
+        logger.info("📊 Applying angle-based velocity gating to entire video...")
+
+        try:
+            # Convert landmarks to angle features FIRST
+            # ✅ FORCE exactly 132 landmark columns (33 × 4)
+            landmarks_df = landmarks_df.iloc[:, :132].copy()
+            landmarks_df.reset_index(drop=True, inplace=True)
+
+            structured_df, body_pose_landmarks = structure_data(landmarks_df)
+
+            structured_df, body_pose_landmarks = update_body_pose_landmarks(
+                structured_df, body_pose_landmarks
+            )
+            angle_features_df = correction_angles_convert(structured_df)
+            
+            logger.info(f"✅ Converted to angle features: {angle_features_df.shape}")
+
+            # Get pose-specific velocity threshold
+            velocity_threshold = POSE_VELOCITY_THRESHOLDS.get(pose, 2.0)
+            logger.info(f"📊 Using velocity threshold {velocity_threshold}°/frame for {pose}")
+
+            # Apply angle-based velocity gating
+            velocities_smooth, phase_midpoints = calculate_angle_velocity(
+                angle_features_df,
+                velocity_threshold=velocity_threshold,
+                min_phase_duration=3
+            )
+
+            logger.info(f"✅ Angle velocity gating: Found {len(phase_midpoints)} stable phases")
+
+            if len(phase_midpoints) == 0:
+                logger.warning("⚠️ No stable phases found, using peak detection fallback")
+                error_values = landmarks_df['error'].values
+                peaks, _ = find_peaks(error_values, distance=3, prominence=0.001)
+                selected_frames = peaks
+            else:
+                selected_frames = phase_midpoints
+
+        except Exception as e:
+            logger.warning(f"⚠️ Angle velocity gating failed: {e}, using peak detection instead")
+            import traceback
+            traceback.print_exc()
+            error_values = landmarks_df['error'].values
+            peaks, _ = find_peaks(error_values, distance=3, prominence=0.001)
+            selected_frames = peaks
+
+        # ✅ STEP 4: Limit feedback frames (cap at 20 for performance)
+        if len(selected_frames) > 20:
+            error_values = landmarks_df['error'].values
+            frame_errors = error_values[selected_frames]
+            top_indices = np.argsort(frame_errors)[-20:]
+            selected_frames = selected_frames[top_indices]
+            selected_frames = np.sort(selected_frames)
+            logger.info(f"✅ Limited to top {len(selected_frames)} stable phases by error")
+
+        logger.info(f"✅ Selected {len(selected_frames)} frames for feedback (DYNAMIC)")
+
+        if len(selected_frames) == 0:
+            # Fallback: use uniform sampling if no frames detected
+            logger.warning("⚠️ No frames selected, using uniform sampling")
+            total_frames = len(landmarks_df)
+            selected_frames = np.linspace(0, total_frames-1, num=min(10, total_frames), dtype=int)
+
+        # ✅ STEP 5: Generate feedback for each selected frame
         feedback_log = []
-        
-        for peak_idx, frame_index in enumerate(peaks, 1):
+
+        for frame_idx, frame_index in enumerate(selected_frames, 1):
             try:
                 frame_row = landmarks_df.iloc[frame_index]
                 frame_data = pd.DataFrame([frame_row])
 
-                # Drop error column safely
                 if 'error' in frame_data.columns:
                     frame_data = frame_data.drop('error', axis=1)
 
@@ -497,62 +554,78 @@ async def process_video(video: UploadFile = File(...), pose: str = Form(...)):
                         for i in range(9)
                     }
 
-                    # --- NEW LOGIC: SHOW ONLY >15° corrections ---
+                    # Show only >15° corrections
                     high_error = {
                         k: v for k, v in corrections_dict.items()
                         if abs(v) >= 15
                     }
 
                     if len(high_error) > 0:
-                        # Only show the >15° deviations
                         feedback_text = generate_text_feedback(high_error)
                         severity = "alert"
                         display_dict = high_error
                     else:
-                        # fallback to all corrections (if small)
                         feedback_text = generate_text_feedback(corrections_dict)
                         severity = "warning"
                         display_dict = corrections_dict
 
-                # Compute timestamp (at 30 fps same as Gradio)
+                # Compute timestamp (at 30 fps)
                 timestamp_sec = round(frame_index / 30.0, 2)
 
-                logger.info(f"Peak {peak_idx} @ {timestamp_sec}s → {feedback_text}")
+                logger.info(f"Stable Phase {frame_idx} @ {timestamp_sec}s → {feedback_text}")
 
                 feedback_log.append({
                     "timestamp": timestamp_sec,
-                    "frame_index": peak_idx,
+                    "frame_index": frame_idx,
                     "feedback": feedback_text,
                     "severity": severity,
                     "angles": display_dict,
                 })
 
             except Exception as e:
-                logger.error(f"Error processing peak {peak_idx}: {e}", exc_info=True)
+                logger.error(f"Error processing frame {frame_idx}: {e}", exc_info=True)
                 feedback_log.append({
                     "timestamp": round(frame_index / 30.0, 2),
-                    "frame_index": peak_idx,
-                    "feedback": f"Frame {peak_idx}: Ready",
+                    "frame_index": frame_idx,
+                    "feedback": "Frame ready",
                     "severity": "positive",
                     "angles": {}
                 })
 
-        
         if not feedback_log:
             return JSONResponse(status_code=500, content={"error": "Failed to generate feedback for any frames"})
         
+        request_end_time = time.perf_counter()
+        total_loading_time = round((request_end_time - request_start_time) * 1000, 2)
+
+        logger.info(
+            f"⏳ TOTAL LOADING TIME (upload → feedback): {total_loading_time} ms"
+        )
+
+
         return {
             "status": "success",
             "pose": pose,
             "feedback_count": len(feedback_log),
             "feedback_log": feedback_log
         }
-        
+
     except Exception as e:
         logger.error(f"❌ Error processing video: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": f"Video processing failed: {str(e)}"})
-    
+
     finally:
+        from metrics import Metrics
+        metrics = Metrics(tag="PROCESS_VIDEO")
+        sys_metrics = metrics.system()
+
+        logger.info(
+            f"✅ Request completed in {metrics.total()} ms | "
+            f"CPU={sys_metrics['cpu_percent']}% | "
+            f"RAM={sys_metrics['ram_mb']} MB | "
+            f"Device={sys_metrics['gpu']}"
+        )
+
         if temp_video and os.path.exists(temp_video.name):
             os.remove(temp_video.name)
 

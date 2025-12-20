@@ -181,7 +181,14 @@ def structure_data(data):
     for i in body_pose_landmarks:
         col_name += [i + "_X", i + "_Y", i + "_Z", i + "_V"]
 
+    if data.shape[1] != len(col_name):
+        raise ValueError(
+            f"structure_data(): column mismatch. "
+            f"Expected {len(col_name)}, got {data.shape[1]}"
+        )
+
     data.columns = col_name
+
     data = data[data.columns[~data.columns.str.contains(" V")]]
 
     return data, body_pose_landmarks
