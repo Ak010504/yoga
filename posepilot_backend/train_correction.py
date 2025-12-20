@@ -537,7 +537,7 @@ def save_model_and_scalers(model, scalers, asana_name, output_dir):
 def main():
     """main training function."""
     parser = argparse.ArgumentParser(description="Train pose correction models for 7 classes")
-    parser.add_argument(
+        _argument(
         "--data_dir", type=str, default="data", help="Data directory path containing pose subdirectories"
     )
     parser.add_argument(
