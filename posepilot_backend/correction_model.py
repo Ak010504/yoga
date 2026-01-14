@@ -1,47 +1,40 @@
+# correction_model.py
+import torch
 import torch.nn as nn
 
 
-# Define LSTM model class
 class CorrModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(CorrModel, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.lstm = nn.LSTM(
-            input_size,
-            hidden_size,
-            num_layers,
-            batch_first=True,
-            bidirectional=True,
-            dropout=0.5,
-        )
+    """
+    Temporal Convolutional Network (TCN) for pose correction.
+    Input : (B, T, 9)
+    Output: (B, 9)  -> correction for last frame
+    """
 
-        self.fc = nn.Linear(self.hidden_size * 2, 8192)
-        self.relu1 = nn.LeakyReLU()
-        self.fc1 = nn.Linear(8192, 4096)
-        self.relu2 = nn.LeakyReLU()
-        self.fc2 = nn.Linear(4096, 512)
-        self.relu3 = nn.LeakyReLU()
-        self.fc3 = nn.Linear(512, num_classes)
+    def __init__(self, input_size=9, channels=(64, 128, 64), kernel_size=3):
+        super().__init__()
+
+        layers = []
+        for i, ch in enumerate(channels):
+            dilation = 2 ** i
+            in_ch = input_size if i == 0 else channels[i - 1]
+
+            layers.append(
+                nn.Conv1d(
+                    in_channels=in_ch,
+                    out_channels=ch,
+                    kernel_size=kernel_size,
+                    padding=(kernel_size - 1) * dilation,
+                    dilation=dilation,
+                )
+            )
+            layers.append(nn.ReLU())
+
+        self.tcn = nn.Sequential(*layers)
+        self.fc = nn.Linear(channels[-1], input_size)
 
     def forward(self, x):
-        # # Initialize hidden state and cell state
-        # h0 = torch.randn(self.num_layers, x.size(0), self.hidden_size).to(device)
-        # c0 = torch.randn(self.num_layers, x.size(0), self.hidden_size).to(device)
-
-        # Forward propagate LSTM
-        out, _ = self.lstm(x)
-
-        # Decode the hidden state of the last time step :: out.shape = (batch_size, seq_length, hidden_size)
-        out = out.contiguous().view(-1, self.hidden_size * 2)
-        # print(out.shape)
-
-        out = self.fc(out)
-        out = self.relu1(out)
-        out = self.fc1(out)
-        out = self.relu2(out)
-        out = self.fc2(out)
-        out = self.relu3(out)
-        out = self.fc3(out)
-
-        return out
+        # x: (B, T, 9)
+        x = x.transpose(1, 2)       # (B, 9, T)
+        y = self.tcn(x)             # (B, C, T)
+        y = y[:, :, -1]             # last timestep
+        return self.fc(y)

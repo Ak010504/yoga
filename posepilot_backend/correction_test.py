@@ -5,7 +5,7 @@ import pandas as pd
 
 def main():
     # --- Configure ---
-    csv_path = "D:\Amrit\College\SSN\CS\SSN\PosePilot\data\warrior\P7.csv"
+    csv_path = "D:/PosePilot/data/warrior/P7.csv"
     pose = "warrior"
     # --- End Configuration ---
 

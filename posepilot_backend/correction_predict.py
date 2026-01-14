@@ -194,39 +194,41 @@ def unscale_data(data_output, scalers):
     return data_output
 
 
+import os
+import torch
+import pickle
+from correction_model import CorrModel
+
+
 def load_model_and_scalers(device, pose):
-    """
-    Load the correction model and scalers for a specific pose.
-    Assumes model and scalers are named {pose}_correction_model.pth/pkl.
+    # Absolute path to this file's directory
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    Parameters
-    ----------
-    device : torch.device
-        Device to load model on
-    pose : str
-        Pose name (e.g., 'chair', 'cobra') for model/scaler file names
+    # Go one level up → PosePilot/
+    PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
-    Returns
-    -------
-    tuple
-        Loaded model and scalers
-    """
-    input_size = 9
-    hidden_size = 256
-    num_layers = 1
-    num_output_features = 9
+    model_path = os.path.join(
+        PROJECT_ROOT, "models", f"{pose}_correction_model.pth"
+    )
+    scalers_path = os.path.join(
+        PROJECT_ROOT, "models", f"{pose}_correction_scalers.pkl"
+    )
 
-    model = CorrModel(input_size, hidden_size, num_layers, num_output_features).to(device)
-    model_path = f"models/{pose}_correction_model.pth"
-    print(f"Loading model from: {model_path}")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
+    if not os.path.exists(scalers_path):
+        raise FileNotFoundError(f"Scalers not found: {scalers_path}")
+
+    model = CorrModel().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    scalers_path = f"models/{pose}_correction_scalers.pkl"
-    print(f"Loading scalers from: {scalers_path}")
-    scalers = pickle.load(open(scalers_path, "rb"))
+    with open(scalers_path, "rb") as f:
+        scalers = pickle.load(f)
 
     return model, scalers
+
 
 
 def predict_correction_sequence(data_input, device, pose, scalers, model):
@@ -330,29 +332,91 @@ def corr_predict(pose, data, return_data=False):
         return None
 
 
-def predict_correction_from_dataframe(data, pose):
+def predict_correction_from_dataframe(df, pose):
     """
-    Predict pose corrections from a DataFrame directly.
-
-    Parameters
-    ----------
-    data : pd.DataFrame
-        DataFrame containing pose landmarks (e.g., raw landmark columns)
-    pose : str
-        Pose name for correction (e.g., 'chair', 'cobra')
-
-    Returns
-    -------
-    dict or None
-        Dictionary containing correction data for plotting or None if error
+    Predict correction for a pose from a raw landmark DataFrame.
+    Uses last WINDOW_SIZE frames only (TCN-compatible).
     """
-    print(f"Predicting correction for pose: {pose} from DataFrame")
+
+    WINDOW_SIZE = 30
+
     try:
-        correction_data = corr_predict(pose, data, return_data=True)
-        return correction_data
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # -----------------------------
+        # Load model + scalers
+        # -----------------------------
+        model, scalers = load_model_and_scalers(device, pose)
+
+        # -----------------------------
+        # Extract angle features
+        # -----------------------------
+        pose_data = df.iloc[:, :132].copy()
+
+        structured_df, body_pose_landmarks = structure_data(pose_data)
+        structured_df, body_pose_landmarks = update_body_pose_landmarks(
+            structured_df, body_pose_landmarks
+        )
+
+        angle_df = correction_angles_convert(structured_df)
+        angle_df = angle_df[[f"f{i}" for i in range(1, 10)]]
+
+        print(f"Extracted angle features. Shape: {angle_df.shape}")
+
+        # -----------------------------
+        # Sliding window selection
+        # -----------------------------
+        if len(angle_df) < WINDOW_SIZE:
+            return {
+                "status": "error",
+                "error": f"Not enough frames ({len(angle_df)}) for window size {WINDOW_SIZE}"
+            }
+
+        window = angle_df.values[-WINDOW_SIZE:]
+
+        # -----------------------------
+        # Normalize
+        # -----------------------------
+        for i, scaler in enumerate(scalers):
+            window[:, i] = scaler.transform(
+                window[:, i].reshape(-1, 1)
+            ).flatten()
+
+        input_tensor = (
+            torch.tensor(window, dtype=torch.float32)
+            .unsqueeze(0)
+            .to(device)
+        )
+
+        # -----------------------------
+        # Predict
+        # -----------------------------
+        with torch.no_grad():
+            correction = model(input_tensor).cpu().numpy()[0]
+
+        # -----------------------------
+        # Inverse normalize
+        # -----------------------------
+        for i, scaler in enumerate(scalers):
+            correction[i] = scaler.inverse_transform(
+                [[correction[i]]]
+            )[0][0]
+
+        return {
+            "status": "success",
+            "pose": pose,
+            "correction": {
+                f"f{i+1}": float(correction[i]) for i in range(9)
+            }
+        }
+
     except Exception as e:
-        print(f"Error in correction prediction from DataFrame: {e}")
-        return {"status": "error", "pose": pose, "error": str(e)}
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
 
 
 def predict_correction_from_csv(csv_path, pose):

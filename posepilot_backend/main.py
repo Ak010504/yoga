@@ -45,7 +45,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Model paths
-MODELS_DIR = Path(__file__).parent / "models"
+BASE_DIR = Path(__file__).resolve().parent      # D:\PosePilot\posepilot_backend
+PROJECT_ROOT = BASE_DIR.parent                  # D:\PosePilot
+MODELS_DIR = PROJECT_ROOT / "models"  
 CLASSIFY_MODEL_PATH = MODELS_DIR / "pose_classification_model.pth"
 CLASSIFY_SCALER_PATH = MODELS_DIR / "classify_scaler.pkl"
 POSE_MAPPING_PATH = MODELS_DIR / "pose_mapping.pkl"
